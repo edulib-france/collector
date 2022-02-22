@@ -23,7 +23,6 @@ import (
 
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/input/postgres"
-	"github.com/pganalyze/collector/input/system/heroku"
 	"github.com/pganalyze/collector/input/system/selfhosted"
 	"github.com/pganalyze/collector/logs"
 	"github.com/pganalyze/collector/runner"
@@ -69,6 +68,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	hasAnyGoogleCloudSQL := false
 	hasAnyAzureDatabase := false
 	hasAnyHeroku := false
+	hasAnyCrunchyBridge := false
 
 	serverConfigs := conf.Servers
 	for _, config := range serverConfigs {
@@ -90,6 +90,9 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		}
 		if config.SystemType == "heroku" {
 			hasAnyHeroku = true
+		}
+		if config.SystemType == "crunchy_bridge" {
+			hasAnyCrunchyBridge = true
 		}
 	}
 
@@ -191,9 +194,9 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 
 	if hasAnyLogsEnabled {
 		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase)
-	} else if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
-		// Even if logs are deactivated, Heroku still requires us to have a functioning web server
-		heroku.SetupHttpHandlerDummy()
+	} else if (os.Getenv("DYNO") != "" && os.Getenv("PORT") != "") || hasAnyCrunchyBridge {
+		// Even if logs are deactivated, Heroku and Crunchy Bridge still require us to have a functioning web server
+		util.SetupHttpHandlerDummy()
 	}
 
 	if hasAnyActivityEnabled {
