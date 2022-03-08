@@ -321,7 +321,7 @@ func TestLogsForAllServers(servers []*state.Server, globalCollectionOpts state.C
 			prefixedLogger.PrintError("ERROR - Could not check log_line_prefix for server: %s", err)
 			hasFailedServers = true
 			continue
-		} else if !logs.IsSupportedPrefix(logLinePrefix) && !(server.Config.SystemType == "heroku" && logLinePrefix == logs.HerokuLogLinePrefix) {
+		} else if !logs.IsSupportedPrefix(logLinePrefix) && !(server.Config.SystemType == "heroku") {
 			prefixedLogger.PrintError("ERROR - Unsupported log_line_prefix setting: '%s'", logLinePrefix)
 			hasFailedServers = true
 			continue
