@@ -1,4 +1,5 @@
 // +heroku goVersion go1.20
+// +scalingo goVersion go1.20
 
 module github.com/pganalyze/collector
 
