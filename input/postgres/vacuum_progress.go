@@ -80,14 +80,14 @@ SELECT (query_start_epoch || padded_pid)::bigint AS vacuum_identity,
 			 JOIN activity a USING (pid)
 			 LEFT JOIN pg_catalog.pg_class c ON (c.oid = v.relid)
 			 LEFT JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
- WHERE v.relid IS NOT NULL OR (a.query <> '<insufficient privilege>' AND a.nspname IS NOT NULL AND a.relname IS NOT NULL)
+ WHERE c.oid IS NOT NULL OR (a.query <> '<insufficient privilege>' AND a.nspname IS NOT NULL AND a.relname IS NOT NULL)
 `
 
 func GetVacuumProgress(logger *util.Logger, db *sql.DB, postgresVersion state.PostgresVersion, ignoreRegexp string) ([]state.PostgresVacuumProgress, error) {
 	var activitySourceTable string
 	var sql string
 
-	if statsHelperExists(db, "get_stat_activity") {
+	if StatsHelperExists(db, "get_stat_activity") {
 		activitySourceTable = "pganalyze.get_stat_activity()"
 	} else {
 		activitySourceTable = "pg_catalog.pg_stat_activity"
@@ -97,7 +97,7 @@ func GetVacuumProgress(logger *util.Logger, db *sql.DB, postgresVersion state.Po
 		sql = fmt.Sprintf(vacuumProgressSQLpg95, activitySourceTable)
 	} else {
 		var vacuumSourceTable string
-		if statsHelperExists(db, "get_stat_progress_vacuum") {
+		if StatsHelperExists(db, "get_stat_progress_vacuum") {
 			vacuumSourceTable = "pganalyze.get_stat_progress_vacuum()"
 		} else {
 			vacuumSourceTable = "pg_catalog.pg_stat_progress_vacuum"

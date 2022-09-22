@@ -40,14 +40,11 @@ var streamTests = []streamTestpair{
 		},
 		state.LogFile{
 			LogLines: []state.LogLine{{
-				CollectedAt:    now.Add(-5 * time.Second),
-				LogLevel:       pganalyze_collector.LogLineInformation_LOG,
-				ByteEnd:        56,
-				Query:          "SELECT pg_sleep(10);",
-				Classification: 80,
-				Details: map[string]interface{}{
-					"duration_ms": 10003.847,
-				},
+				CollectedAt:        now.Add(-5 * time.Second),
+				LogLevel:           pganalyze_collector.LogLineInformation_LOG,
+				ByteEnd:            56,
+				Query:              "SELECT pg_sleep(10);",
+				Classification:     80,
 				ReviewedForSecrets: true,
 				SecretMarkers: []state.LogSecretMarker{{
 					ByteStart: 35,
@@ -100,11 +97,16 @@ var streamTests = []streamTestpair{
 				ReviewedForSecrets: true,
 			},
 				{
-					CollectedAt:      now.Add(-5 * time.Second),
-					LogLevel:         pganalyze_collector.LogLineInformation_STATEMENT,
-					ByteStart:        46,
-					ByteContentStart: 46,
-					ByteEnd:          71,
+					CollectedAt:        now.Add(-5 * time.Second),
+					LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+					ByteStart:          46,
+					ByteContentStart:   46,
+					ByteEnd:            71,
+					ReviewedForSecrets: true,
+					SecretMarkers: []state.LogSecretMarker{{
+						ByteEnd: 25,
+						Kind:    state.StatementTextLogSecret,
+					}},
 				}},
 		},
 		"permission denied for function pg_reload_conf\nSELECT pg_reload_conf();\n",
@@ -193,7 +195,7 @@ var streamTests = []streamTestpair{
 		[]state.LogLine{},
 		nil,
 	},
-	// Multiple lines not concatenated yet (use case for self-managed systems)
+	// Multiple lines not concatenated yet (use case for self-managed systems and long texts on GCP)
 	{
 		[]state.LogLine{
 			{
@@ -253,6 +255,36 @@ var streamTests = []streamTestpair{
 			},
 		},
 		"zero\nfirst\nsecond\nthird\n",
+		[]state.LogLine{},
+		nil,
+	},
+	// Multiple lines not concatenated yet (out of order messages, can occur for long texts on GCP)
+	{
+		[]state.LogLine{{
+			CollectedAt: now.Add(-5 * time.Second),
+			OccurredAt:  now.Add(-4 * time.Second),
+			Content:     " );\n",
+		},
+			{
+				CollectedAt:   now.Add(-4 * time.Second),
+				OccurredAt:    now.Add(-5 * time.Second),
+				LogLevel:      pganalyze_collector.LogLineInformation_LOG,
+				LogLineNumber: 2,
+				BackendPid:    42,
+				Content:       "LOG:  duration: 10010.397 ms  statement: SELECT pg_sleep(10\n",
+			}},
+		state.TransientLogState{},
+		state.LogFile{
+			LogLines: []state.LogLine{{
+				CollectedAt:   now.Add(-4 * time.Second),
+				OccurredAt:    now.Add(-5 * time.Second),
+				LogLevel:      pganalyze_collector.LogLineInformation_LOG,
+				ByteEnd:       64,
+				LogLineNumber: 2,
+				BackendPid:    42,
+			}},
+		},
+		"LOG:  duration: 10010.397 ms  statement: SELECT pg_sleep(10\n );\n",
 		[]state.LogLine{},
 		nil,
 	},
@@ -325,7 +357,7 @@ var streamTests = []streamTestpair{
 
 func TestAnalyzeStreamInGroups(t *testing.T) {
 	for _, pair := range streamTests {
-		TransientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(pair.logLines, now)
+		TransientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(pair.logLines, now, &state.Server{})
 		logFileContent := ""
 		if logFile.TmpFile != nil {
 			dat, err := ioutil.ReadFile(logFile.TmpFile.Name())

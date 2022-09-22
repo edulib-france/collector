@@ -9,6 +9,7 @@ import (
 
 const typesSQL string = `
 SELECT t.oid,
+       t.typarray AS arrayoid,
        n.nspname AS schema,
        t.typname AS name,
        t.typtype AS type,
@@ -18,7 +19,7 @@ SELECT t.oid,
        COALESCE(
          CASE t.typtype
            WHEN 'd' THEN
-             (SELECT pg_catalog.json_agg(pg_catalog.pg_get_constraintdef(oid)) FROM pg_catalog.pg_constraint WHERE contypid = t.oid)::text
+             (SELECT pg_catalog.json_agg(pg_catalog.pg_get_constraintdef(oid, FALSE)) FROM pg_catalog.pg_constraint WHERE contypid = t.oid)::text
            WHEN 'e' THEN
              (SELECT pg_catalog.json_agg(enumlabel ORDER BY enumsortorder) FROM pg_catalog.pg_enum WHERE enumtypid = t.oid)::text
            WHEN 'c' THEN
@@ -30,6 +31,7 @@ SELECT t.oid,
  WHERE t.typtype <> 'b'
     AND (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid))
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type el WHERE el.oid = t.typelem AND el.typarray = t.oid)
+	AND t.oid NOT IN (SELECT pd.objid FROM pg_catalog.pg_depend pd WHERE pd.deptype = 'e' AND pd.classid = 'pg_catalog.pg_type'::regclass)
     AND n.nspname <> 'pg_catalog'
     AND n.nspname <> 'information_schema'
     AND n.nspname !~ '^pg_toast'
@@ -56,7 +58,7 @@ func GetTypes(db *sql.DB, postgresVersion state.PostgresVersion, currentDatabase
 		t.DatabaseOid = currentDatabaseOid
 
 		err := rows.Scan(
-			&t.Oid, &t.SchemaName, &t.Name, &t.Type, &t.DomainType, &t.DomainNotNull, &t.DomainDefault, &arrayString)
+			&t.Oid, &t.ArrayOid, &t.SchemaName, &t.Name, &t.Type, &t.DomainType, &t.DomainNotNull, &t.DomainDefault, &arrayString)
 
 		if err != nil {
 			return nil, err

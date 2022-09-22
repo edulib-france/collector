@@ -7,13 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pganalyze/collector/grant"
-	"github.com/pganalyze/collector/input/postgres"
 	"github.com/pganalyze/collector/logs"
-	"github.com/pganalyze/collector/output"
 	"github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/state"
-	"github.com/pganalyze/collector/util"
 	uuid "github.com/satori/go.uuid"
 )
 
@@ -37,10 +33,12 @@ import (
 //
 // Google Cloud SQL log data looks like this:
 // - Not correctly ordered (lines from Pub/Sub may arrive in any order)
-// - All lines have a timestamp
-// - Always has the log line number, allowing association of related log lines
-// - Multi-line messages are already combined together
-//   (as of Sept 14, 2021 - see https://cloud.google.com/sql/docs/release-notes#September_14_2021)
+// - All lines have a timestamp (taken from the Timestamp field in the original Cloud Logging message)
+// - First line of a message always has log line number (due to fixed log_line_prefix)
+// - Log events split across multiple log messages only have the PID and line number in the first message,
+//   may arrive out of order, but have a timestamp that is correctly ordering each part of the log event
+// - Split log events are rare (as of Sept 14, 2021 - see https://cloud.google.com/sql/docs/release-notes#September_14_2021),
+//   but can still happen if the log data is too big (cutoff appears to be around 1000-2000 lines, or ~100kb of data)
 
 const InvalidPid int32 = -1
 const UnknownPid int32 = 0
@@ -256,7 +254,7 @@ const StreamReadyThreshold time.Duration = 3 * time.Second
 //
 // The caller is expected to keep a repository of "tooFreshLogLines" that they
 // can send back in again in the next call, combined with new lines received
-func AnalyzeStreamInGroups(logLines []state.LogLine, now time.Time) (state.TransientLogState, state.LogFile, []state.LogLine, error) {
+func AnalyzeStreamInGroups(logLines []state.LogLine, now time.Time, server *state.Server) (state.TransientLogState, state.LogFile, []state.LogLine, error) {
 	// Pre-Sort by PID, log line number and occurred at timestamp
 	//
 	// Its important we do this early, to support out-of-order receipt of log lines,
@@ -304,7 +302,14 @@ func AnalyzeStreamInGroups(logLines []state.LogLine, now time.Time) (state.Trans
 	//
 	// Since we already sorted by PID earlier, it is safe for us to concatenate lines before grouping. In fact,
 	// this is required for cases where unknown log lines don't have PIDs associated
-	analyzableLogLines := stitchLogLines(readyLogLines)
+	stitchedLogLines := stitchLogLines(readyLogLines)
+
+	var analyzableLogLines []state.LogLine
+	for _, logLine := range stitchedLogLines {
+		if !server.IgnoreLogLine(logLine.Content) {
+			analyzableLogLines = append(analyzableLogLines, logLine)
+		}
+	}
 
 	logFile, err := writeTmpLogFile(analyzableLogLines)
 	if err != nil {
@@ -338,77 +343,4 @@ func LogTestAnyEvent(server *state.Server, logFile state.LogFile, logTestSucceed
 
 // LogTestNone - Don't confirm the log test
 func LogTestNone(server *state.Server, logFile state.LogFile, logTestSucceeded chan<- bool) {
-}
-
-// ProcessLogStream - Accepts one or more log lines to be analyzed and processed
-//
-// Note that input log lines are expected to preserve their trailing newlines.
-//
-// Note that this returns the lines that were not processed, based on the
-// time-based buffering logic. These lines should be passed in again with
-// the next call.
-//
-// The caller is not expected to do any special time-based buffering themselves.
-func ProcessLogStream(server *state.Server, logLines []state.LogLine, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger, logTestSucceeded chan<- bool, logTestFunc func(s *state.Server, lf state.LogFile, lt chan<- bool)) []state.LogLine {
-	server.CollectionStatusMutex.Lock()
-	if server.CollectionStatus.LogSnapshotDisabled {
-		server.CollectionStatusMutex.Unlock()
-		return []state.LogLine{}
-	}
-	server.CollectionStatusMutex.Unlock()
-
-	logState, logFile, tooFreshLogLines, err := AnalyzeStreamInGroups(logLines, time.Now())
-	if err != nil {
-		prefixedLogger.PrintError("%s", err)
-		return tooFreshLogLines
-	}
-
-	logState.LogFiles = []state.LogFile{logFile}
-
-	// Nothing to send, so just skip getting the grant and other work
-	if len(logFile.LogLines) == 0 && len(logState.QuerySamples) == 0 {
-		logState.Cleanup()
-		return tooFreshLogLines
-	}
-
-	if server.Config.EnableLogExplain && len(logState.QuerySamples) != 0 {
-		logState.QuerySamples = postgres.RunExplain(server, logState.QuerySamples, globalCollectionOpts, prefixedLogger)
-	}
-
-	if globalCollectionOpts.DebugLogs {
-		prefixedLogger.PrintInfo("Would have sent log state:\n")
-		content, _ := ioutil.ReadFile(logFile.TmpFile.Name())
-		logs.PrintDebugInfo(string(content), logFile.LogLines, logState.QuerySamples)
-		logState.Cleanup()
-		return tooFreshLogLines
-	}
-
-	if globalCollectionOpts.TestRun {
-		logTestFunc(server, logFile, logTestSucceeded)
-		logState.Cleanup()
-		return tooFreshLogLines
-	}
-
-	grant, err := grant.GetLogsGrant(server, globalCollectionOpts, prefixedLogger)
-	if err != nil {
-		prefixedLogger.PrintError("Could not get log grant: %s", err)
-		logState.Cleanup()
-		return logLines // Retry
-	}
-
-	if !grant.Valid {
-		prefixedLogger.PrintVerbose("Skipping log data: Feature not available on this pganalyze plan, or log data limit exceeded")
-		logState.Cleanup()
-		return tooFreshLogLines
-	}
-
-	err = output.UploadAndSendLogs(server, grant, globalCollectionOpts, prefixedLogger, logState)
-	if err != nil {
-		prefixedLogger.PrintError("Failed to upload/send logs: %s", err)
-		logState.Cleanup()
-		return logLines // Retry
-	}
-
-	logState.Cleanup()
-	return tooFreshLogLines
 }

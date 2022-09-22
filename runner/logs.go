@@ -2,10 +2,13 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/guregu/null"
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/grant"
 	"github.com/pganalyze/collector/input/postgres"
@@ -15,6 +18,7 @@ import (
 	"github.com/pganalyze/collector/input/system/heroku"
 	"github.com/pganalyze/collector/input/system/selfhosted"
 	"github.com/pganalyze/collector/logs"
+	"github.com/pganalyze/collector/logs/querysample"
 	"github.com/pganalyze/collector/logs/stream"
 	"github.com/pganalyze/collector/output"
 	"github.com/pganalyze/collector/state"
@@ -37,7 +41,7 @@ func SetupLogCollection(ctx context.Context, wg *sync.WaitGroup, servers []*stat
 		}
 		if server.Config.LogLocation != "" || server.Config.LogDockerTail != "" || server.Config.LogSyslogServer != "" {
 			hasAnyLogTails = true
-		} else if server.Config.AwsDbInstanceID != "" {
+		} else if server.Config.SupportsLogDownload() {
 			hasAnyLogDownloads = true
 		}
 	}
@@ -51,6 +55,9 @@ func SetupLogCollection(ctx context.Context, wg *sync.WaitGroup, servers []*stat
 	}
 	if hasAnyHeroku {
 		heroku.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
+		for _, server := range servers {
+			EmitTestLogMsg(server, globalCollectionOpts, logger)
+		}
 	}
 	if hasAnyGoogleCloudSQL {
 		google_cloudsql.SetupLogSubscriber(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
@@ -88,7 +95,7 @@ func setupLogDownloadForAllServers(ctx context.Context, wg *sync.WaitGroup, glob
 						continue
 					}
 
-					if server.Config.AwsDbInstanceID == "" {
+					if !server.Config.SupportsLogDownload() {
 						continue
 					}
 
@@ -120,7 +127,7 @@ func downloadLogsForServerWithLocksAndCallbacks(wg *sync.WaitGroup, server *stat
 	newLogState, success, err := downloadLogsForServer(server, globalCollectionOpts, prefixedLogger)
 	if err != nil {
 		server.LogStateMutex.Unlock()
-		prefixedLogger.PrintError("Could not collect logs for server: %s", err)
+		printLogDownloadError(server, err, prefixedLogger)
 		if server.Config.ErrorCallback != "" {
 			go runCompletionCallback("error", server.Config.ErrorCallback, server.Config.SectionName, "logs", err, prefixedLogger)
 		}
@@ -143,7 +150,7 @@ func downloadLogsForServer(server *state.Server, globalCollectionOpts state.Coll
 	defer transientLogState.Cleanup()
 
 	var newLogState state.PersistedLogState
-	newLogState, transientLogState.LogFiles, transientLogState.QuerySamples, err = system.DownloadLogFiles(server.LogPrevState, server.Config, logger)
+	newLogState, transientLogState.LogFiles, transientLogState.QuerySamples, err = system.DownloadLogFiles(server, globalCollectionOpts, logger)
 	if err != nil {
 		return newLogState, false, errors.Wrap(err, "could not collect logs")
 	}
@@ -221,7 +228,7 @@ func processLogStream(server *state.Server, logLines []state.LogLine, now time.T
 	}
 	server.CollectionStatusMutex.Unlock()
 
-	transientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(logLines, now)
+	transientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(logLines, now, server)
 	if err != nil {
 		logger.PrintError("%s", err)
 		return tooFreshLogLines
@@ -281,6 +288,38 @@ func postprocessAndSendLogs(server *state.Server, globalCollectionOpts state.Col
 		transientLogState.QuerySamples = postgres.RunExplain(server, transientLogState.QuerySamples, globalCollectionOpts, logger)
 	}
 
+	if server.Config.FilterQuerySample == "all" {
+		transientLogState.QuerySamples = []state.PostgresQuerySample{}
+	} else if server.Config.FilterQuerySample == "normalize" {
+		for idx, sample := range transientLogState.QuerySamples {
+			// Ensure we always normalize the query text (when sample normalization is on), even if EXPLAIN errors out
+			sample.Query = util.NormalizeQuery(sample.Query, "unparseable", -1)
+			for pIdx, _ := range sample.Parameters {
+				sample.Parameters[pIdx] = null.StringFrom("<removed>")
+			}
+			if sample.ExplainOutputText != "" {
+				sample.ExplainOutputText = ""
+				sample.ExplainError = "EXPLAIN normalize failed: auto_explain format is not JSON - not supported (discarding EXPLAIN)"
+			}
+			if sample.ExplainOutputJSON != nil {
+				sample.ExplainOutputJSON, err = querysample.NormalizeExplainJSON(sample.ExplainOutputJSON)
+				if err != nil {
+					sample.ExplainOutputJSON = nil
+					sample.ExplainError = fmt.Sprintf("EXPLAIN normalize failed: %s", err)
+				}
+			}
+			transientLogState.QuerySamples[idx] = sample
+		}
+	} else {
+		// Do nothing if filter_query_sample = none (we just take the query samples as they are generated)
+	}
+
+	for idx := range transientLogState.LogFiles {
+		// The actual filtering (aka masking of secrets) is done later in
+		// EncryptAndUploadLogfiles, based on this setting
+		transientLogState.LogFiles[idx].FilterLogSecret = state.ParseFilterLogSecret(server.Config.FilterLogSecret)
+	}
+
 	if globalCollectionOpts.DebugLogs {
 		logger.PrintInfo("Would have sent log state:\n")
 		for _, logFile := range transientLogState.LogFiles {
@@ -321,8 +360,12 @@ func TestLogsForAllServers(servers []*state.Server, globalCollectionOpts state.C
 			prefixedLogger.PrintError("ERROR - Could not check log_line_prefix for server: %s", err)
 			hasFailedServers = true
 			continue
-		} else if !logs.IsSupportedPrefix(logLinePrefix) && !(server.Config.SystemType == "heroku") {
+		} else if server.Config.SystemType == "heroku" && logLinePrefix == logs.LogPrefixHerokuHobbyTier {
+			prefixedLogger.PrintWarning("WARNING - Detected log_line_prefix indicates Heroku Postgres Hobby tier, which has no log output support")
+			continue
+		} else if !logs.IsSupportedPrefix(logLinePrefix) {
 			prefixedLogger.PrintError("ERROR - Unsupported log_line_prefix setting: '%s'", logLinePrefix)
+			prefixedLogger.PrintInfo("HINT - You can find a list of supported settings in the pganalyze documentation: https://pganalyze.com/docs/log-insights/setup/self-managed/troubleshooting")
 			hasFailedServers = true
 			continue
 		}
@@ -343,8 +386,8 @@ func TestLogsForAllServers(servers []*state.Server, globalCollectionOpts state.C
 			} else {
 				success = false
 			}
-		} else if server.Config.AwsDbInstanceID != "" {
-			success = testRdsLogDownload(ctx, &wg, server, globalCollectionOpts, prefixedLogger)
+		} else if server.Config.SupportsLogDownload() {
+			success = testLogDownload(ctx, &wg, server, globalCollectionOpts, prefixedLogger)
 		} else if server.Config.AzureDbServerName != "" && server.Config.AzureEventhubNamespace != "" && server.Config.AzureEventhubName != "" {
 			success = testAzureLogStream(ctx, &wg, server, globalCollectionOpts, prefixedLogger)
 		} else if server.Config.GcpCloudSQLInstanceID != "" && server.Config.GcpPubsubSubscription != "" {
@@ -373,7 +416,7 @@ func testLocalLogTail(ctx context.Context, wg *sync.WaitGroup, server *state.Ser
 		return false
 	}
 
-	logs.EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:
@@ -387,11 +430,11 @@ func testLocalLogTail(ctx context.Context, wg *sync.WaitGroup, server *state.Ser
 	return true
 }
 
-func testRdsLogDownload(ctx context.Context, wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger) bool {
-	prefixedLogger.PrintInfo("Testing log collection (Amazon RDS)...")
+func testLogDownload(ctx context.Context, wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger) bool {
+	prefixedLogger.PrintInfo("Testing log download...")
 	_, _, err := downloadLogsForServer(server, globalCollectionOpts, prefixedLogger)
 	if err != nil {
-		prefixedLogger.PrintError("ERROR - Could not get Amazon RDS logs: %s", err)
+		printLogDownloadError(server, err, prefixedLogger)
 		return false
 	}
 
@@ -408,10 +451,13 @@ func testAzureLogStream(ctx context.Context, wg *sync.WaitGroup, server *state.S
 	err := azure.SetupLogSubscriber(ctx, wg, globalCollectionOpts, logger, []*state.Server{server}, parsedLogStream)
 	if err != nil {
 		logger.PrintError("ERROR - Could not get logs through Azure Event Hub: %s", err)
+		if strings.HasPrefix(err.Error(), "failed to configure Azure AD JWT provider: failed") {
+			logger.PrintInfo("HINT - This may occur when you have multiple user-assigned managed identities set for your virtual machine. Try removing any unrelated managed identities, or explicitly set the azure_ad_client_id setting to the managed identity's Client ID.")
+		}
 		return false
 	}
 
-	logs.EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:
@@ -438,7 +484,7 @@ func testGoogleCloudsqlLogStream(ctx context.Context, wg *sync.WaitGroup, server
 		return false
 	}
 
-	logs.EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:
@@ -451,4 +497,12 @@ func testGoogleCloudsqlLogStream(ctx context.Context, wg *sync.WaitGroup, server
 
 	logger.PrintInfo("  Log test successful")
 	return true
+}
+
+func printLogDownloadError(server *state.Server, err error, prefixedLogger *util.Logger) {
+	prefixedLogger.PrintError("ERROR - Could not download logs: %s", err)
+	msg := err.Error()
+	if server.Config.SystemType == "amazon_rds" && strings.Contains(msg, "NoCredentialProviders") {
+		prefixedLogger.PrintInfo("HINT - This may occur if you have not assigned an IAM role to the collector EC2 instance, and have not provided AWS credentials through another method")
+	}
 }

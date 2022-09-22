@@ -15,8 +15,9 @@ type Config struct {
 // ServerIdentifier -
 //   Unique identity of each configured server, for deduplication inside the collector.
 //
-//   Note we intentionally don't include SystemScopeFallback in the identifier, since that is mostly intended
-//   to help transition different scope values on the API side - in the collector we rely on system scope only.
+//   Note we intentionally don't include the Fallback variables in the identifier, since that is mostly intended
+//   to help transition systems when their "identity" is altered due to collector changes - in the collector we rely
+//   on the non-Fallback values only.
 type ServerIdentifier struct {
 	APIKey      string
 	APIBaseURL  string
@@ -66,6 +67,8 @@ type ServerConfig struct {
 	AwsRegion               string `ini:"aws_region"`
 	AwsAccountID            string `ini:"aws_account_id"`
 	AwsDbInstanceID         string `ini:"aws_db_instance_id"`
+	AwsDbClusterID          string `ini:"aws_db_cluster_id"`
+	AwsDbClusterReadonly    bool   `ini:"aws_db_cluster_readonly"`
 	AwsAccessKeyID          string `ini:"aws_access_key_id"`
 	AwsSecretAccessKey      string `ini:"aws_secret_access_key"`
 	AwsAssumeRole           string `ini:"aws_assume_role"`
@@ -90,12 +93,17 @@ type ServerConfig struct {
 	AzureADCertificatePath     string `ini:"azure_ad_certificate_path"`
 	AzureADCertificatePassword string `ini:"azure_ad_certificate_password"`
 
+	GcpProjectID          string `ini:"gcp_project_id"` // Optional for CloudSQL (you can pass the full "Connection name" as the instance ID)
 	GcpCloudSQLInstanceID string `ini:"gcp_cloudsql_instance_id"`
+	GcpAlloyDBClusterID   string `ini:"gcp_alloydb_cluster_id"`
+	GcpAlloyDBInstanceID  string `ini:"gcp_alloydb_instance_id"`
 	GcpPubsubSubscription string `ini:"gcp_pubsub_subscription"`
 	GcpCredentialsFile    string `ini:"gcp_credentials_file"`
 
-	// Optional, we recommend passing the full "Connection name" as GCP CloudSQL instance ID
-	GcpProjectID string `ini:"gcp_project_id"`
+	CrunchyBridgeClusterID string `ini:"crunchy_bridge_cluster_id"`
+
+	AivenProjectID string `ini:"aiven_project_id"`
+	AivenServiceID string `ini:"aiven_service_id"`
 
 	SectionName string
 	Identifier  ServerIdentifier
@@ -103,6 +111,8 @@ type ServerConfig struct {
 	SystemID            string `ini:"api_system_id"`
 	SystemType          string `ini:"api_system_type"`
 	SystemScope         string `ini:"api_system_scope"`
+	SystemIDFallback    string `ini:"api_system_id_fallback"`
+	SystemTypeFallback  string `ini:"api_system_type_fallback"`
 	SystemScopeFallback string `ini:"api_system_scope_fallback"`
 
 	// Configures the location where logfiles are - this can either be a directory,
@@ -117,6 +127,13 @@ type ServerConfig struct {
 	// Configures the collector to start a built-in syslog server that listens
 	// on the specifed "hostname:port" for Postgres log messages
 	LogSyslogServer string `ini:"db_log_syslog_server"`
+
+	// Configures the collector to use the "pg_read_file" (superuser) or
+	// "pganalyze.read_log_file" (helper) function to retrieve log data
+	// directly over the Postgres connection. This only works when superuser
+	// access to the server is possible, either directly, or via the helper
+	// function. Used by default for Crunchy Bridge.
+	LogPgReadFile bool `ini:"db_log_pg_read_file"`
 
 	// Specifies a table pattern to ignore - no statistics will be collected for
 	// tables that match the name. This uses Golang's filepath.Match function for
@@ -156,7 +173,7 @@ type ServerConfig struct {
 
 	// Configuration for PII filtering
 	FilterLogSecret   string `ini:"filter_log_secret"`   // none/all/credential/parsing_error/statement_text/statement_parameter/table_data/ops/unidentified (comma separated)
-	FilterQuerySample string `ini:"filter_query_sample"` // none/all (defaults to "none")
+	FilterQuerySample string `ini:"filter_query_sample"` // none/normalize/all (defaults to "none")
 	FilterQueryText   string `ini:"filter_query_text"`   // none/unparsable (defaults to "unparsable")
 
 	// HTTP proxy overrides
@@ -167,6 +184,11 @@ type ServerConfig struct {
 	// HTTP clients to be used for API connections
 	HTTPClient          *http.Client
 	HTTPClientWithRetry *http.Client
+}
+
+// SupportsLogDownload - Determines whether the specified config can download logs
+func (config ServerConfig) SupportsLogDownload() bool {
+	return config.AwsDbInstanceID != "" || config.AwsDbClusterID != "" || config.LogPgReadFile
 }
 
 // GetPqOpenString - Gets the database configuration as a string that can be passed to lib/pq for connecting

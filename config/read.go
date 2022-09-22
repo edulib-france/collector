@@ -119,8 +119,18 @@ func getDefaultConfig() *ServerConfig {
 	if awsAccountID := os.Getenv("AWS_ACCOUNT_ID"); awsAccountID != "" {
 		config.AwsAccountID = awsAccountID
 	}
+	// Legacy name (recommended to use AWS_DB_INSTANCE_ID going forward)
 	if awsInstanceID := os.Getenv("AWS_INSTANCE_ID"); awsInstanceID != "" {
 		config.AwsDbInstanceID = awsInstanceID
+	}
+	if awsDbInstanceID := os.Getenv("AWS_DB_INSTANCE_ID"); awsDbInstanceID != "" {
+		config.AwsDbInstanceID = awsDbInstanceID
+	}
+	if awsDbClusterID := os.Getenv("AWS_DB_CLUSTER_ID"); awsDbClusterID != "" {
+		config.AwsDbClusterID = awsDbClusterID
+	}
+	if awsDbClusterReadonly := os.Getenv("AWS_DB_CLUSTER_READONLY"); awsDbClusterReadonly != "" {
+		config.AwsDbClusterReadonly = parseConfigBool(awsDbClusterReadonly)
 	}
 	if awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID"); awsAccessKeyID != "" {
 		config.AwsAccessKeyID = awsAccessKeyID
@@ -179,6 +189,12 @@ func getDefaultConfig() *ServerConfig {
 	if gcpCloudSQLInstanceID := os.Getenv("GCP_CLOUDSQL_INSTANCE_ID"); gcpCloudSQLInstanceID != "" {
 		config.GcpCloudSQLInstanceID = gcpCloudSQLInstanceID
 	}
+	if gcpAlloyDBClusterID := os.Getenv("GCP_ALLOYDB_CLUSTER_ID"); gcpAlloyDBClusterID != "" {
+		config.GcpAlloyDBClusterID = gcpAlloyDBClusterID
+	}
+	if gcpAlloyDBInstanceID := os.Getenv("GCP_ALLOYDB_INSTANCE_ID"); gcpAlloyDBInstanceID != "" {
+		config.GcpAlloyDBInstanceID = gcpAlloyDBInstanceID
+	}
 	if gcpPubsubSubscription := os.Getenv("GCP_PUBSUB_SUBSCRIPTION"); gcpPubsubSubscription != "" {
 		config.GcpPubsubSubscription = gcpPubsubSubscription
 	}
@@ -193,6 +209,9 @@ func getDefaultConfig() *ServerConfig {
 	}
 	if logSyslogServer := os.Getenv("LOG_SYSLOG_SERVER"); logSyslogServer != "" {
 		config.LogSyslogServer = logSyslogServer
+	}
+	if logPgReadFile := os.Getenv("LOG_PG_READ_FILE"); logPgReadFile != "" {
+		config.LogPgReadFile = parseConfigBool(logPgReadFile)
 	}
 	// Note: We don't support LogDockerTail here since it would require the "docker"
 	// binary inside the pganalyze container (as well as full Docker access), instead
@@ -340,11 +359,20 @@ func preprocessConfig(config *ServerConfig) (*ServerConfig, error) {
 	if strings.HasSuffix(host, ".rds.amazonaws.com") {
 		parts := strings.SplitN(host, ".", 4)
 		if len(parts) == 4 && parts[3] == "rds.amazonaws.com" { // Safety check for any escaping issues
-			if config.AwsDbInstanceID == "" {
-				config.AwsDbInstanceID = parts[0]
+			if strings.HasPrefix(parts[1], "cluster-") {
+				if config.AwsDbClusterID == "" {
+					config.AwsDbClusterID = parts[0]
+					if strings.HasPrefix(parts[1], "cluster-ro-") {
+						config.AwsDbClusterReadonly = true
+					}
+				}
+			} else {
+				if config.AwsDbInstanceID == "" {
+					config.AwsDbInstanceID = parts[0]
+				}
 			}
 			if config.AwsAccountID == "" {
-				config.AwsAccountID = parts[1]
+				config.AwsAccountID = strings.TrimPrefix(strings.TrimPrefix(parts[1], "cluster-ro-"), "cluster-")
 			}
 			if config.AwsRegion == "" {
 				config.AwsRegion = parts[2]
@@ -357,11 +385,29 @@ func preprocessConfig(config *ServerConfig) (*ServerConfig, error) {
 				config.AzureDbServerName = parts[0]
 			}
 		}
+	} else if strings.HasSuffix(host, ".postgresbridge.com") {
+		parts := strings.SplitN(host, ".", 3)
+		if len(parts) == 3 && parts[0] == "p" && (parts[2] == "db.postgresbridge.com") { // Safety check for any escaping issues
+			if config.CrunchyBridgeClusterID == "" {
+				config.CrunchyBridgeClusterID = parts[1]
+			}
+		}
+	} else if strings.HasSuffix(host, ".aivencloud.com") {
+		parts := strings.SplitN(host, ".", 2)
+		if len(parts) == 2 && (parts[1] == "aivencloud.com") { // Safety check for any escaping issues
+			projSvcParts := strings.SplitN(parts[0], "-", 3)
+			if config.AivenServiceID == "" {
+				config.AivenServiceID = strings.Join(projSvcParts[0:2], "-")
+			}
+			if config.AivenProjectID == "" {
+				config.AivenProjectID = projSvcParts[2]
+			}
+		}
 	}
 
 	// This is primarily for backwards compatibility when using the IP address of an instance
 	// combined with only specifying its name, but not its region.
-	if config.AwsDbInstanceID != "" && config.AwsRegion == "" {
+	if (config.AwsDbClusterID != "" || config.AwsDbInstanceID != "") && config.AwsRegion == "" {
 		config.AwsRegion = "us-east-1"
 	}
 
@@ -399,6 +445,10 @@ func preprocessConfig(config *ServerConfig) (*ServerConfig, error) {
 
 	if config.AwsEndpointSigningRegionLegacy != "" && config.AwsEndpointSigningRegion == "" {
 		config.AwsEndpointSigningRegion = config.AwsEndpointSigningRegionLegacy
+	}
+
+	if config.CrunchyBridgeClusterID != "" {
+		config.LogPgReadFile = true
 	}
 
 	return config, nil
@@ -441,7 +491,7 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 				return conf, err
 			}
 			config.SectionName = section.Name()
-			config.SystemType, config.SystemScope, config.SystemScopeFallback, config.SystemID = identifySystem(*config)
+			config.SystemID, config.SystemType, config.SystemScope, config.SystemIDFallback, config.SystemTypeFallback, config.SystemScopeFallback = identifySystem(*config)
 
 			config.Identifier = ServerIdentifier{
 				APIKey:      config.APIKey,
@@ -481,7 +531,7 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 	} else {
 		if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
 			for _, kv := range os.Environ() {
-				parts := strings.Split(kv, "=")
+				parts := strings.SplitN(kv, "=", 2)
 				if strings.HasSuffix(parts[0], "_URL") {
 					config := getDefaultConfig()
 					config, err = preprocessConfig(config)
@@ -492,6 +542,13 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 					config.SystemID = strings.Replace(parts[0], "_URL", "", 1)
 					config.SystemType = "heroku"
 					config.DbURL = parts[1]
+					config.Identifier = ServerIdentifier{
+						APIKey:      config.APIKey,
+						APIBaseURL:  config.APIBaseURL,
+						SystemID:    config.SystemID,
+						SystemType:  config.SystemType,
+						SystemScope: config.SystemScope,
+					}
 					conf.Servers = append(conf.Servers, *config)
 				}
 			}
@@ -501,7 +558,7 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 			if err != nil {
 				return conf, err
 			}
-			config.SystemType, config.SystemScope, config.SystemScopeFallback, config.SystemID = identifySystem(*config)
+			config.SystemID, config.SystemType, config.SystemScope, config.SystemIDFallback, config.SystemTypeFallback, config.SystemScopeFallback = identifySystem(*config)
 			conf.Servers = append(conf.Servers, *config)
 		} else {
 			return conf, fmt.Errorf("No configuration file found at %s, and no environment variables set", filename)

@@ -1,5 +1,166 @@
 # Changelog
 
+## 0.45.2      2022-08-31
+
+* Amazon RDS/Aurora
+  - Log download: Fix edge case that caused errors on hourly log boundaries
+    - Resolves errors like "Error reading 65817 bytes from tempfile: unexpected EOF"
+  - Collect tags assigned to instance as system metadata
+* Docker: Allow setting CONFIG_CONTENTS to pass ini-style configuration
+  - This allows easier configuration of multiple servers to be monitored by
+    the same Docker container. Previously this required use of a volume
+    mount, which can be harder to make work successfully.
+  - CONFIG_CONTENTS needs to match the regular configuration file format that
+    uses separate sections for each server.
+  - This can be combined with environment-variable style configuration for
+    settings that apply to all servers (e.g. PGA_API_KEY) but all
+    server-specific configuration should only be passed in through the
+    CONFIG_CONTENTS variable.
+
+
+## 0.45.1      2022-08-12
+
+* Amazon Aurora and Amazon RDS
+  - Auto-detect Aurora writer instance, as well as reader on two-node clusters
+    - Previously it was required to specify the individual instance to support
+      log downloads and system metrics, but this now happens automatically
+    - The cluster name is auto-detected from the hostname, but to override the
+      new "aws_db_cluster_id" and "aws_db_cluster_readonly" settings can be used
+    - This requires giving the IAM policy for the collector the
+      "DescribeDBClusters" permission
+    - In case more than one reader instance is used, each reader instance must
+      be specified individually instead of using the readonly cluster hostname
+  - Show RDS instance role hint when running collector test
+  - Ensure permission errors during log download are shown
+* Add "-q" / "--quiet" flag for hiding everything except errors in the logs
+
+
+## 0.45.0      2022-07-29
+
+* Log Insights: Filter out `log_statement=all` and `log_duration=on` log lines
+  - This replaces the previous behaviour that prevented all log collection for
+    servers that had either `log_statement=all` or `log_duration=on` enabled.
+  - With the new logic, we continue ignoring these high-frequency events
+    (which would cause downstream problems), but accept all other log events,
+    including threshold-based auto_explain events.
+* Track extensions that are installed on each database
+  - This is helpful to ensure that the necessary schema definitions are
+    loaded by pganalyze, e.g. for use by the Index Advisor.
+  - Ignore objects that are provided by extensions, as determined by pg_depend
+    (e.g. function definitions, etc)
+* Add support for Google AlloyDB for PostgreSQL
+  - This adds new options to specify the AlloyDB cluster ID and instance ID
+  - Special cases the log parsing to support AlloyDB's `[filename:line]` prefix
+  - Supports AlloyDB's modified autovacuum log output
+* Add explicit support for Aiven Postgres databases
+  - Support was previously available via the self-managed instructions, but
+    this adds explicit support and improved setup instructions
+  - Existing Aiven servers that were detected as self-managed will be
+    automatically updated to be recognized as Aiven servers
+* Self-managed servers
+  - Support disk statistics for software RAID devices
+    - These statistics are summarized across all component disk devices and
+      then tracked for the parent software RAID device as one. Note that this
+      is only done in case these statistics are not yet set (which is the case
+      for the typical Linux software RAID setup).
+  - Allow using `pg_read_file` to read log files (instead of log tail / syslog)
+    - This relies on the built-in Postgres function `pg_read_file` to read log
+      files and return the log data over the Postgres connection.
+    - This requires superuser (either directly or through a helper) and thus
+      does not work on managed database providers, with the exception of
+      Crunchy Bridge, for which this is already the mechanism to fetch logs.
+    - Additionally, this carries higher overhead than directly tailing log
+      files, or using syslog, and thus should only be used when necessary.
+    - Set `db_log_pg_read_file = 1` / `LOG_PG_READ_FILE=1` to enable the logic
+* Crunchy Bridge
+  - Fix collection of system metrics
+* Heroku Postgres
+  - Fix blank log line parsing
+* Add `--test-section` parameter to set a specific config section to test
+* Fully qualify constraint definitions, to support non-standard schemas
+* Add support for log_line_prefix `%m [%p] %q%u@%d ` and `%t [%p] %q%u@%d %h `
+
+
+## 0.44.0      2022-06-29
+
+* Add optional normalization of sensitive fields in EXPLAIN plans
+  - Introduces new "filter_query_sample = normalize" setting that normalizes
+    expression fields in the EXPLAIN plan ("Filter", "Index Cond", etc) using
+    the pg_query normalization logic. Unknown EXPLAIN fields are discarded when
+    this option is active.
+  - Turning on this setting will also cause all query samples (whether they
+    have an EXPLAIN attached or not) to have their query text normalized
+    and their parameters marked as `<removed>`.
+  - This setting is recommended when EXPLAIN plans may contain sensitive
+    data that should not be stored. Please verify that the logic works
+    as expected with your workload and log output.
+  - In order to mask EXPLAIN output in the actual log stream as well (not just
+    the query samples / EXPLAIN plans), make sure to use a `filter_log_secret`
+    setting that includes the `statement_text` value
+* Be more accepting with outdated pg_stat_statements versions
+  - With this change, its no longer required to run
+    "ALTER EXTENSION pg_stat_statements UPDATE" in order to use
+    the collector after a Postgres upgrade
+  - The collector will output an info message in case an outdated
+    pg_stat_statements version is in use
+* Allow pg_stat_statements to be installed in schemas other than "public"
+  - This is automatically detected based on information in `pg_extension`
+    and does not require any extra configuration when using a special schema
+* Log Insights
+  - Remove unnecessary "duration_ms" and "unparsed_explain_text" metadata
+    fields, they are already contained within the query sample data
+  - Always mark STATEMENT/QUERY log lines as "statement_text" log secret,
+    instead of "unidentified" log secret in some cases
+* Amazon RDS / Amazon Aurora
+  - Fix rare bug with duplicate pg_settings values on Aurora Postgres
+  - Add RDS instance role hint when NoCredentialProviders error is hit
+* Heroku Postgres
+  - Add support for new log_line_prefix
+  - Log processing: Avoid repeating the same line over and over again
+  - Fix log handling when consuming logs for multiple databases
+* Google Cloud SQL
+  - Re-enable log stitching for messages - whilst the GCP release notes mention
+    that this is no longer a problem as of Sept 2021, log events can still be
+    split up into multiple messages if they exceed a threshold around 1000-2000
+    lines, or ~100kb
+* Custom types: Correctly track custom type reference for array types
+* Improve the "too many tables" error message to clarify possible solutions
+* Fix bug related to new structured JSON logs feature (see prior release)
+* Update pg_query_go to v2.1.2
+  - Fixes memory leak in pg_query_fingerprint error handling
+  - Fix parsing some operators with ? character (ltree / promscale extensions)
+
+
+## 0.43.1      2022-05-02
+
+* Add option for emitting collector logs as structured JSON logs ([@jschaf](https://github.com/jschaf))
+  - Example output:
+    ```
+    {"severity":"INFO","message":"Running collector test with pganalyze-collector ...","time":"2022-04-19T12:31:05.100489-07:00"}
+    ```
+  - Enable this option by passing the "--json-logs" option to the collector binary
+* Log Insights: Add support for Postgres 14 autovacuum and autoanalyze log events
+* Column stats helper: Indicate which database is missing the helper in error message
+* Azure Database for PostgreSQL
+  - Add log monitoring support for Flexible Server deployment option
+* Heroku Postgres
+  - Fix environment parsing to support parsing of equals signs in variables
+  - Log test: Don't count Heroku Postgres free tier as hard failure (emit warning instead)
+
+
+## 0.43.0      2022-03-30
+
+* Add integration for Crunchy Bridge provider
+* Check citus.shard_replication_factor before querying citus_table_size
+  - This fixes support for citus.shard_replication_factor > 1
+* Filter out vacuum records we cannot match to a table name
+  - This can occur when a manual vacuum is run in a database other than the
+    primary database that is being monitored, previously leading to
+    processing errors in the backend
+* Docker image: Add tzdata package
+  - This is required to allow timezone parsing during log line handling
+
+
 ## 0.42.2      2022-02-15
 
 * Fix cleanup of temporary files used when processing logs

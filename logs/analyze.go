@@ -1,13 +1,13 @@
 package logs
 
 import (
-	"encoding/json"
+	"fmt"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/guregu/null"
+	"github.com/pganalyze/collector/logs/querysample"
 	"github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/state"
 )
@@ -31,9 +31,10 @@ var utcTimestampRegexp = `(\d+-\d+-\d+ \d+:\d+:\d+(?:\.\d+)?(?:[\d:+-]+| \w+))`
 var autoExplain = analyzeGroup{
 	classification: pganalyze_collector.LogLineInformation_STATEMENT_AUTO_EXPLAIN,
 	primary: match{
-		prefixes: []string{"duration: "},
-		regexp:   regexp.MustCompile(`^duration: ([\d\.]+) ms\s+ plan:\s+`),
-		secrets:  []state.LogSecretKind{0},
+		prefixes:      []string{"duration: "},
+		regexp:        regexp.MustCompile(`^duration: ([\d\.]+) ms\s+ plan:\s+`),
+		secrets:       []state.LogSecretKind{0},
+		remainderKind: state.StatementTextLogSecret,
 	},
 }
 var duration = analyzeGroup{
@@ -74,22 +75,32 @@ var skippingVacuum = analyzeGroup{
 var autoVacuum = analyzeGroup{
 	classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
 	primary: match{
-		prefixes: []string{"automatic vacuum of table", "automatic aggressive vacuum of table"},
-		regexp: regexp.MustCompile(`^automatic (aggressive )?vacuum of table "(.+?)": index scans: (\d+)\s*` +
-			`pages: (\d+) removed, (\d+) remain(?:, (\d+) skipped due to pins)?(?:, (\d+) skipped frozen)?\s*` +
-			`tuples: (\d+) removed, (\d+) remain, (\d+) are dead but not yet removable(?:, oldest xmin: (\d+))?\s*` +
-			`buffer usage: (\d+) hits, (\d+) misses, (\d+) dirtied\s*` +
-			`avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s\s*` +
+		prefixes: []string{"automatic vacuum of table", "automatic aggressive vacuum of table", "automatic aggressive vacuum to prevent wraparound of table"},
+		regexp: regexp.MustCompile(`^automatic (aggressive )?vacuum (to prevent wraparound )?of table "(.+?)": index scans: (\d+),?\s*` +
+			`(?:elapsed time: \d+ \w+, index vacuum time: \d+ \w+,)?\s*` + // Google AlloyDB for PostgreSQL
+			`pages: (\d+) removed, (\d+) remain(?:, (\d+) skipped due to pins)?(?:, (\d+) skipped frozen)?,?\s*` +
+			`(?:\d+ skipped using mintxid)?,?\s*` + // Google AlloyDB for PostgreSQL
+			`tuples: (\d+) removed, (\d+) remain, (\d+) are dead but not yet removable(?:, oldest xmin: (\d+))?,?\s*` +
+			`(?:index scan (not needed|needed|bypassed|bypassed by failsafe): (\d+) pages from table \(([\d.]+)% of total\) (?:have|had) (\d+) dead item identifiers(?: removed)?)?,?\s*` + // Postgres 14+
+			`(?:I/O timings: read: ([\d.]+) ms, write: ([\d.]+) ms)?,?\s*` + // Postgres 14+
+			`(?:avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s)?,?\s*` + // Postgres 14+
+			`buffer usage: (\d+) hits, (\d+) misses, (\d+) dirtied,?\s*` +
+			`(?:avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s)?,?\s*` + // Postgres 13 and older
+			`(?:WAL usage: (\d+) records, (\d+) full page images, (\d+) bytes)?,?\s*` + // Postgres 14+
 			`system usage: CPU(?:(?: ([\d.]+)s/([\d.]+)u sec elapsed ([\d.]+) sec)|(?:: user: ([\d.]+) s, system: ([\d.]+) s, elapsed: ([\d.]+) s))`),
-		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	},
 }
 var autoAnalyze = analyzeGroup{
 	classification: pganalyze_collector.LogLineInformation_AUTOANALYZE_COMPLETED,
 	primary: match{
 		prefixes: []string{"automatic analyze of table"},
-		regexp:   regexp.MustCompile(`^automatic analyze of table "(.+?)" system usage: CPU(?:(?: ([\d.]+)s/([\d.]+)u sec elapsed ([\d.]+) sec)|(?:: user: ([\d.]+) s, system: ([\d.]+) s, elapsed: ([\d.]+) s))`),
-		secrets:  []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0},
+		regexp: regexp.MustCompile(`^automatic analyze of table "(.+?)"\s*` +
+			`(?:I/O timings: read: ([\d.]+) ms, write: ([\d.]+) ms)?\s*` + // Postgres 14+
+			`(?:avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s)?\s*` + // Postgres 14+
+			`(?:buffer usage: (\d+) hits, (\d+) misses, (\d+) dirtied)?\s*` + // Postgres 14+
+			`system usage: CPU(?:(?: ([\d.]+)s/([\d.]+)u sec elapsed ([\d.]+) sec)|(?:: user: ([\d.]+) s, system: ([\d.]+) s, elapsed: ([\d.]+) s))`),
+		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	},
 }
 var checkpointStarting = analyzeGroup{
@@ -1132,13 +1143,6 @@ var otherContextPatterns = []match{
 	},
 }
 
-type autoExplainJSONPlanDetails struct {
-	QueryText string                 `json:"Query Text"`
-	Plan      map[string]interface{} `json:"Plan"`
-}
-
-var autoExplainTextPlanDetailsRegexp = regexp.MustCompile(`^Query Text: (.+)\s+([\s\S]+)`)
-
 var parallelWorkerProcessTextRegexp = regexp.MustCompile(`^parallel worker for PID (\d+)`)
 
 func AnalyzeLogLines(logLinesIn []state.LogLine) (logLinesOut []state.LogLine, samples []state.PostgresQuerySample) {
@@ -1256,7 +1260,6 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 				logLine.Classification = m.classification
 				detailLine, _ = matchLogLine(detailLine, m.detail)
 				hintLine, _ = matchLogLine(hintLine, m.hint)
-				//statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 				contextLine = matchOtherContextLogLine(contextLine)
 				return logLine, statementLine, detailLine, contextLine, hintLine, samples
 			}
@@ -1476,59 +1479,14 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		logLine, parts = matchLogLine(logLine, autoExplain.primary)
 		if len(parts) == 2 {
 			logLine.Classification = autoExplain.classification
-			runtime, _ := strconv.ParseFloat(parts[1], 64)
-			logLine.Details = map[string]interface{}{"duration_ms": runtime}
 
 			explainText := strings.TrimSpace(logLine.Content[len(parts[0]):len(logLine.Content)])
-			if strings.HasPrefix(explainText, "{") { // json format
-				var planDetails autoExplainJSONPlanDetails
-				if strings.HasSuffix(explainText, "[Your log message was truncated]") {
-					logLine.Details["truncated"] = true
-				} else if err := json.Unmarshal([]byte(explainText), &planDetails); err != nil {
-					logLine.Details["unparsed_explain_text"] = explainText
-				} else {
-					logLine.Query = strings.TrimSpace(planDetails.QueryText)
-					explainJSON, err := json.Marshal(planDetails.Plan)
-					if err != nil {
-						logLine.Details["unparsed_explain_text"] = explainText
-					} else {
-						sample := state.PostgresQuerySample{
-							OccurredAt:    logLine.OccurredAt,
-							Username:      logLine.Username,
-							Database:      logLine.Database,
-							Query:         logLine.Query,
-							LogLineUUID:   logLine.UUID,
-							RuntimeMs:     runtime,
-							HasExplain:    true,
-							ExplainSource: pganalyze_collector.QuerySample_AUTO_EXPLAIN_EXPLAIN_SOURCE,
-							ExplainFormat: pganalyze_collector.QuerySample_JSON_EXPLAIN_FORMAT,
-							// Reformat JSON so its the same as when using EXPLAIN (FORMAT JSON)
-							ExplainOutput: "[{\"Plan\":" + string(explainJSON) + "}]",
-						}
-						samples = append(samples, sample)
-					}
-				}
-			} else if strings.HasPrefix(explainText, "Query Text:") { // text format
-				explainParts := autoExplainTextPlanDetailsRegexp.FindStringSubmatch(explainText)
-
-				if len(explainParts) == 3 {
-					logLine.Query = strings.TrimSpace(explainParts[1])
-					sample := state.PostgresQuerySample{
-						OccurredAt:    logLine.OccurredAt,
-						Username:      logLine.Username,
-						Database:      logLine.Database,
-						Query:         logLine.Query,
-						LogLineUUID:   logLine.UUID,
-						RuntimeMs:     runtime,
-						HasExplain:    true,
-						ExplainSource: pganalyze_collector.QuerySample_AUTO_EXPLAIN_EXPLAIN_SOURCE,
-						ExplainFormat: pganalyze_collector.QuerySample_TEXT_EXPLAIN_FORMAT,
-						ExplainOutput: explainParts[2],
-					}
-					samples = append(samples, sample)
-				} else {
-					logLine.Details["unparsed_explain_text"] = explainText
-				}
+			sample, err := querysample.TransformAutoExplainToQuerySample(logLine, explainText, parts[1])
+			if err != nil {
+				logLine.Details = map[string]interface{}{"query_sample_error": fmt.Sprintf("%s", err)}
+			} else {
+				samples = append(samples, sample)
+				logLine.Query = sample.Query
 			}
 
 			contextLine = matchOtherContextLogLine(contextLine)
@@ -1541,33 +1499,16 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		if strings.HasSuffix(strings.TrimSpace(logLine.Content), "[Your log message was truncated]") {
 			logLine.Details = map[string]interface{}{"truncated": true}
 		} else if len(parts) == 5 {
-			logLine.Query = strings.TrimSpace(logLine.Content[len(parts[0]):len(logLine.Content)])
+			var parameterParts [][]string
+			if strings.HasPrefix(detailLine.Content, "parameters: ") {
+				detailLine, parameterParts = matchLogLineAll(detailLine, duration.detail)
+			}
+			queryText := logLine.Content[len(parts[0]):len(logLine.Content)]
 
-			if logLine.Query != "" && parts[2] != "bind" && parts[2] != "parse" {
-				runtime, _ := strconv.ParseFloat(parts[1], 64)
-				logLine.Details = map[string]interface{}{"duration_ms": runtime}
-				sample := state.PostgresQuerySample{
-					OccurredAt:  logLine.OccurredAt,
-					Username:    logLine.Username,
-					Database:    logLine.Database,
-					Query:       logLine.Query,
-					LogLineUUID: logLine.UUID,
-					RuntimeMs:   runtime,
-				}
-				if strings.HasPrefix(detailLine.Content, "parameters: ") {
-					var parameterParts [][]string
-					detailLine, parameterParts = matchLogLineAll(detailLine, duration.detail)
-					for _, part := range parameterParts {
-						if len(part) == 3 {
-							if part[1] == "NULL" {
-								sample.Parameters = append(sample.Parameters, null.NewString("", false))
-							} else {
-								sample.Parameters = append(sample.Parameters, null.StringFrom(part[2]))
-							}
-						}
-					}
-				}
+			sample, ok := querysample.TransformLogMinDurationStatementToQuerySample(logLine, queryText, parts[1], parts[2], parameterParts)
+			if ok {
 				samples = append(samples, sample)
+				logLine.Query = sample.Query
 			}
 		}
 
@@ -1658,11 +1599,15 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 	}
 	if matchesPrefix(logLine, autoVacuum.primary.prefixes) {
 		logLine, parts = matchLogLine(logLine, autoVacuum.primary)
-		if len(parts) == 23 {
-			var kernelPart, userPart, elapsedPart string
+		if len(parts) == 35 {
+			var readRatePart, writeRatePart, kernelPart, userPart, elapsedPart string
+
+			aggressiveVacuum := parts[1] == "aggressive "
+
+			// Part 2 (anti-wraparound) is only present on Postgres 12+, and dealt with at the end
 
 			logLine.Classification = autoVacuum.classification
-			subParts := strings.SplitN(parts[2], ".", 3)
+			subParts := strings.SplitN(parts[3], ".", 3)
 			logLine.Database = subParts[0]
 			if len(subParts) >= 2 {
 				logLine.SchemaName = subParts[1]
@@ -1671,27 +1616,42 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 				logLine.RelationName = subParts[2]
 			}
 
-			aggressiveVacuum := parts[1] == "aggressive "
-			numIndexScans, _ := strconv.ParseInt(parts[3], 10, 64)
-			pagesRemoved, _ := strconv.ParseInt(parts[4], 10, 64)
-			relPages, _ := strconv.ParseInt(parts[5], 10, 64)
-			tuplesDeleted, _ := strconv.ParseInt(parts[8], 10, 64)
-			newRelTuples, _ := strconv.ParseInt(parts[9], 10, 64)
-			newDeadTuples, _ := strconv.ParseInt(parts[10], 10, 64)
-			vacuumPageHit, _ := strconv.ParseInt(parts[12], 10, 64)
-			vacuumPageMiss, _ := strconv.ParseInt(parts[13], 10, 64)
-			vacuumPageDirty, _ := strconv.ParseInt(parts[14], 10, 64)
-			readRateMb, _ := strconv.ParseFloat(parts[15], 64)
-			writeRateMb, _ := strconv.ParseFloat(parts[16], 64)
+			numIndexScans, _ := strconv.ParseInt(parts[4], 10, 64)
+			pagesRemoved, _ := strconv.ParseInt(parts[5], 10, 64)
+			relPages, _ := strconv.ParseInt(parts[6], 10, 64)
 
-			if parts[17] != "" {
-				kernelPart = parts[17]
-				userPart = parts[18]
-				elapsedPart = parts[19]
+			// Parts 7 and 8 (Pinskipped/Frozenskipped pages) are only present on Postgres 9.5/9.6+ and dealt with at the end
+
+			tuplesDeleted, _ := strconv.ParseInt(parts[9], 10, 64)
+			newRelTuples, _ := strconv.ParseInt(parts[10], 10, 64)
+			newDeadTuples, _ := strconv.ParseInt(parts[11], 10, 64)
+
+			// Parts 12 to 18 (Index scan info, I/O read/write timings) are only present on Postgres 14+ and dealt with at the end
+
+			if parts[19] != "" { // Postgres 14+, with I/O information before buffers
+				readRatePart = parts[19]
+				writeRatePart = parts[20]
+			} else { // Postgres 13 and older
+				readRatePart = parts[24]
+				writeRatePart = parts[25]
+			}
+			readRateMb, _ := strconv.ParseFloat(readRatePart, 64)
+			writeRateMb, _ := strconv.ParseFloat(writeRatePart, 64)
+
+			vacuumPageHit, _ := strconv.ParseInt(parts[21], 10, 64)
+			vacuumPageMiss, _ := strconv.ParseInt(parts[22], 10, 64)
+			vacuumPageDirty, _ := strconv.ParseInt(parts[23], 10, 64)
+
+			// Parts 26 to 28 (WAL Usage) are only present on Postgres 13+ and dealt with at the end
+
+			if parts[29] != "" {
+				kernelPart = parts[29]
+				userPart = parts[30]
+				elapsedPart = parts[31]
 			} else {
-				userPart = parts[20]
-				kernelPart = parts[21]
-				elapsedPart = parts[22]
+				userPart = parts[32]
+				kernelPart = parts[33]
+				elapsedPart = parts[34]
 			}
 			rusageKernelMode, _ := strconv.ParseFloat(kernelPart, 64)
 			rusageUserMode, _ := strconv.ParseFloat(userPart, 64)
@@ -1707,17 +1667,52 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 				"write_rate_mb": writeRateMb, "rusage_kernel": rusageKernelMode,
 				"rusage_user": rusageUserMode, "elapsed_secs": rusageElapsed,
 			}
-			if parts[6] != "" {
-				pinskippedPages, _ := strconv.ParseInt(parts[6], 10, 64)
-				logLine.Details["pinskipped_pages"] = pinskippedPages
+			// List anti-wraparound status either if the message indicates that it is, or if
+			// our Postgres version is new enough (13+) as determined by the presence of WAL
+			// record information (parts[26])
+			//
+			// Note that Postgres 12 is the odd one out, because it already had anti-wraparound
+			// status displayed, but we have no way to distinguish it from versions that didn't
+			// have it - there, only include the case when the vacuum indeed is a anti-wraparound
+			// vacuum.
+			if parts[2] != "" || parts[26] != "" {
+				antiWraparound := parts[2] == "to prevent wraparound "
+				logLine.Details["anti_wraparound"] = antiWraparound
 			}
 			if parts[7] != "" {
-				frozenskippedPages, _ := strconv.ParseInt(parts[7], 10, 64)
+				pinskippedPages, _ := strconv.ParseInt(parts[7], 10, 64)
+				logLine.Details["pinskipped_pages"] = pinskippedPages
+			}
+			if parts[8] != "" {
+				frozenskippedPages, _ := strconv.ParseInt(parts[8], 10, 64)
 				logLine.Details["frozenskipped_pages"] = frozenskippedPages
 			}
-			if parts[11] != "" {
-				oldestXmin, _ := strconv.ParseInt(parts[11], 10, 64)
+			if parts[12] != "" {
+				oldestXmin, _ := strconv.ParseInt(parts[12], 10, 64)
 				logLine.Details["oldest_xmin"] = oldestXmin
+			}
+			if parts[13] != "" {
+				lpdeadItemPages, _ := strconv.ParseInt(parts[14], 10, 64)
+				lpdeadItemPagePercent, _ := strconv.ParseFloat(parts[15], 64)
+				lpdeadItems, _ := strconv.ParseInt(parts[16], 10, 64)
+				logLine.Details["lpdead_index_scan"] = parts[13] // not needed / needed / bypassed / bypassed by failsafe
+				logLine.Details["lpdead_item_pages"] = lpdeadItemPages
+				logLine.Details["lpdead_item_page_percent"] = lpdeadItemPagePercent
+				logLine.Details["lpdead_items"] = lpdeadItems
+			}
+			if parts[17] != "" {
+				blkReadTime, _ := strconv.ParseFloat(parts[17], 64)
+				blkWriteTime, _ := strconv.ParseFloat(parts[18], 64)
+				logLine.Details["blk_read_time"] = blkReadTime
+				logLine.Details["blk_write_time"] = blkWriteTime
+			}
+			if parts[26] != "" {
+				walRecords, _ := strconv.ParseInt(parts[26], 10, 64)
+				walFpi, _ := strconv.ParseInt(parts[27], 10, 64)
+				walBytes, _ := strconv.ParseInt(parts[28], 10, 64)
+				logLine.Details["wal_records"] = walRecords
+				logLine.Details["wal_fpi"] = walFpi
+				logLine.Details["wal_bytes"] = walBytes
 			}
 			contextLine = matchOtherContextLogLine(contextLine)
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1725,7 +1720,7 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 	}
 	if matchesPrefix(logLine, autoAnalyze.primary.prefixes) {
 		logLine, parts = matchLogLine(logLine, autoAnalyze.primary)
-		if len(parts) == 8 {
+		if len(parts) == 15 {
 			var kernelPart, userPart, elapsedPart string
 			logLine.Classification = autoAnalyze.classification
 			subParts := strings.SplitN(parts[1], ".", 3)
@@ -1736,14 +1731,17 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 			if len(subParts) >= 3 {
 				logLine.RelationName = subParts[2]
 			}
-			if parts[2] != "" {
-				kernelPart = parts[2]
-				userPart = parts[3]
-				elapsedPart = parts[4]
+
+			// Parts 2 to 8 (I/O and buffers information) are only present on Postgres 14+ and dealt with at the end
+
+			if parts[9] != "" {
+				kernelPart = parts[9]
+				userPart = parts[10]
+				elapsedPart = parts[11]
 			} else {
-				userPart = parts[5]
-				kernelPart = parts[6]
-				elapsedPart = parts[7]
+				userPart = parts[12]
+				kernelPart = parts[13]
+				elapsedPart = parts[14]
 			}
 			rusageKernelMode, _ := strconv.ParseFloat(kernelPart, 64)
 			rusageUserMode, _ := strconv.ParseFloat(userPart, 64)
@@ -1751,6 +1749,22 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 			logLine.Details = map[string]interface{}{
 				"rusage_kernel": rusageKernelMode, "rusage_user": rusageUserMode,
 				"elapsed_secs": rusageElapsed,
+			}
+			if parts[2] != "" {
+				blkReadTime, _ := strconv.ParseFloat(parts[2], 64)
+				blkWriteTime, _ := strconv.ParseFloat(parts[3], 64)
+				readRateMb, _ := strconv.ParseFloat(parts[4], 64)
+				writeRateMb, _ := strconv.ParseFloat(parts[5], 64)
+				analyzePageHit, _ := strconv.ParseInt(parts[6], 10, 64)
+				analyzePageMiss, _ := strconv.ParseInt(parts[7], 10, 64)
+				analyzePageDirty, _ := strconv.ParseInt(parts[8], 10, 64)
+				logLine.Details["blk_read_time"] = blkReadTime
+				logLine.Details["blk_write_time"] = blkWriteTime
+				logLine.Details["read_rate_mb"] = readRateMb
+				logLine.Details["write_rate_mb"] = writeRateMb
+				logLine.Details["analyze_page_hit"] = analyzePageHit
+				logLine.Details["analyze_page_miss"] = analyzePageMiss
+				logLine.Details["analyze_page_dirty"] = analyzePageDirty
 			}
 			contextLine = matchOtherContextLogLine(contextLine)
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1868,7 +1882,6 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		if len(parts) == 2 {
 			logLine.Classification = uniqueConstraintViolation.classification
 			detailLine, _ = matchLogLine(detailLine, uniqueConstraintViolation.detail)
-			statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 			contextLine = matchOtherContextLogLine(contextLine)
 			// FIXME: Store constraint name
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1879,7 +1892,6 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		if len(parts) == 3 {
 			logLine.Classification = foreignKeyConstraintViolation1.classification
 			detailLine, _ = matchLogLine(detailLine, foreignKeyConstraintViolation1.detail)
-			statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 			contextLine = matchOtherContextLogLine(contextLine)
 			// FIXME: Store constraint name and relation name
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1890,7 +1902,6 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		if len(parts) == 4 {
 			logLine.Classification = foreignKeyConstraintViolation2.classification
 			detailLine, _ = matchLogLine(detailLine, foreignKeyConstraintViolation2.detail)
-			statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 			contextLine = matchOtherContextLogLine(contextLine)
 			// FIXME: Store constraint name and both relation names
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1901,7 +1912,6 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		if len(parts) == 2 {
 			logLine.Classification = nullConstraintViolation.classification
 			detailLine, _ = matchLogLine(detailLine, nullConstraintViolation.detail)
-			statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 			contextLine = matchOtherContextLogLine(contextLine)
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
 		}
@@ -2114,6 +2124,8 @@ func AnalyzeBackendLogLines(logLines []state.LogLine) (logLinesOut []state.LogLi
 					statementLine = futureLine
 					statementLine.ParentUUID = logLine.UUID
 					statementLineIdx = lowerBound + idx
+					// Ensure STATEMENT line is consistently marked as statement text log secret
+					statementLine = markLineAsSecret(statementLine, state.StatementTextLogSecret)
 				} else if futureLine.LogLevel == pganalyze_collector.LogLineInformation_DETAIL {
 					detailLine = futureLine
 					detailLine.ParentUUID = logLine.UUID
@@ -2126,6 +2138,10 @@ func AnalyzeBackendLogLines(logLines []state.LogLine) (logLinesOut []state.LogLi
 					hintLine = futureLine
 					hintLine.ParentUUID = logLine.UUID
 					hintLineIdx = lowerBound + idx
+				} else if futureLine.LogLevel == pganalyze_collector.LogLineInformation_QUERY {
+					logLines[lowerBound+idx].ParentUUID = logLine.UUID
+					// Ensure QUERY line is consistently marked as statement text log secret
+					logLines[lowerBound+idx] = markLineAsSecret(logLines[lowerBound+idx], state.StatementTextLogSecret)
 				} else {
 					logLines[lowerBound+idx].ParentUUID = logLine.UUID
 				}

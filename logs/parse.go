@@ -30,7 +30,15 @@ const LogPrefixCustom11 string = "pid=%p,user=%u,db=%d,app=%a,client=%h "
 const LogPrefixCustom12 string = "user=%u,db=%d,app=%a,client=%h "
 const LogPrefixCustom13 string = "%p-%s-%c-%l-%h-%u-%d-%m "
 const LogPrefixCustom14 string = "%m [%p][%b][%v][%x] %q[user=%u,db=%d,app=%a] "
+const LogPrefixCustom15 string = "%m [%p] %q%u@%d "
+const LogPrefixCustom16 string = "%t [%p] %q%u@%d %h "
 const LogPrefixSimple string = "%m [%p] "
+const LogPrefixHeroku1 string = " sql_error_code = %e "
+const LogPrefixHeroku2 string = ` sql_error_code = %e time_ms = "%m" pid="%p" proc_start_time="%s" session_id="%c" vtid="%v" tid="%x" log_line="%l" %qdatabase="%d" connection_source="%r" user="%u" application_name="%a" `
+
+// Used only to recognize the Heroku hobby tier log_line_prefix to give a warning (logs are not supported
+// on hobby tier) and avoid errors during prefix check; logs with this prefix are never actually received
+const LogPrefixHerokuHobbyTier string = " database = %d connection_source = %r sql_error_code = %e "
 const LogPrefixEmpty string = ""
 
 var RecommendedPrefixIdx = 4
@@ -40,7 +48,8 @@ var SupportedPrefixes = []string{
 	LogPrefixCustom3, LogPrefixCustom4, LogPrefixCustom5, LogPrefixCustom6,
 	LogPrefixCustom7, LogPrefixCustom8, LogPrefixCustom9, LogPrefixCustom10,
 	LogPrefixCustom11, LogPrefixCustom12, LogPrefixCustom13, LogPrefixCustom14,
-	LogPrefixSimple, LogPrefixEmpty,
+	LogPrefixCustom15, LogPrefixCustom16,
+	LogPrefixSimple, LogPrefixHeroku1, LogPrefixHeroku2, LogPrefixEmpty,
 }
 
 // Every one of these regexps should produce exactly one matching group
@@ -51,6 +60,7 @@ var UserRegexp = `(\S*)`                                                     // 
 var DbRegexp = `(\S*)`                                                       // %d
 var AppBeforeSpaceRegexp = `(\S*)`                                           // %a
 var AppBeforeCommaRegexp = `([^,]*)`                                         // %a
+var AppBeforeQuoteRegexp = `([^"]*)`                                         // %a
 var AppInsideBracketsRegexp = `(\[unknown\]|[^,\]]*)`                        // %a
 var HostRegexp = `(\S*)`                                                     // %h
 var VirtualTxRegexp = `(\d+/\d+)?`                                           // %v
@@ -80,8 +90,12 @@ var LogPrefixCustom11Regexp = regexp.MustCompile(`(?s)^pid=` + PidRegexp + `,use
 var LogPrefixCustom12Regexp = regexp.MustCompile(`(?s)^user=` + UserRegexp + `,db=` + DbRegexp + `,app=` + AppBeforeCommaRegexp + `,client=` + HostRegexp + ` ` + LevelAndContentRegexp)
 var LogPrefixCustom13Regexp = regexp.MustCompile(`(?s)^` + PidRegexp + `-` + TimeRegexp + `-` + SessionIdRegexp + `-` + LogLineCounterRegexp + `-` + HostRegexp + `-` + UserRegexp + `-` + DbRegexp + `-` + TimeRegexp + ` ` + LevelAndContentRegexp)
 var LogPrefixCustom14Regexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + PidRegexp + `\]\[` + BackendTypeRegexp + `\]\[` + VirtualTxRegexp + `\]\[` + TransactionIdRegexp + `\] (?:\[user=` + UserRegexp + `,db=` + DbRegexp + `,app=` + AppInsideBracketsRegexp + `\] )?` + LevelAndContentRegexp)
+var LogPrefixCustom15Regexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + PidRegexp + `\] ` + `(?:` + UserRegexp + `@` + DbRegexp + ` )?` + LevelAndContentRegexp)
+var LogPrefixCustom16Regexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + PidRegexp + `\] ` + `(?:` + UserRegexp + `@` + DbRegexp + ` ` + HostRegexp + ` )?` + LevelAndContentRegexp)
 var LogPrefixSimpleRegexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + PidRegexp + `\] ` + LevelAndContentRegexp)
 var LogPrefixNoTimestampUserDatabaseAppRegexp = regexp.MustCompile(`(?s)^\[user=` + UserRegexp + `,db=` + DbRegexp + `,app=` + AppInsideBracketsRegexp + `\] ` + LevelAndContentRegexp)
+var LogPrefixHeroku1Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + " " + LevelAndContentRegexp)
+var LogPrefixHeroku2Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + ` time_ms = "` + TimeRegexp + `" pid="` + PidRegexp + `" proc_start_time="` + TimeRegexp + `" session_id="` + SessionIdRegexp + `" vtid="` + VirtualTxRegexp + `" tid="` + TransactionIdRegexp + `" log_line="` + LogLineCounterRegexp + `" (?:database="` + DbRegexp + `" connection_source="` + HostAndPortRegexp + `" user="` + UserRegexp + `" application_name="` + AppBeforeQuoteRegexp + `" )?` + LevelAndContentRegexp)
 
 var SyslogSequenceAndSplitRegexp = `(\[[\d-]+\])?`
 
@@ -91,9 +105,7 @@ var RsyslogHostnameRegxp = `(\S+)`
 var RsyslogProcessNameRegexp = `(\w+)`
 var RsyslogRegexp = regexp.MustCompile(`^` + RsyslogTimeRegexp + ` ` + RsyslogHostnameRegxp + ` ` + RsyslogProcessNameRegexp + `\[` + PidRegexp + `\]: ` + SyslogSequenceAndSplitRegexp + ` ` + RsyslogLevelAndContentRegexp)
 
-// The Heroku log_line_prefix is handled directly in the Heroku log receiver, included here for reference only
-var HerokuLogLinePrefix = " sql_error_code = %e "
-var HerokuPostgresDebugRegexp = regexp.MustCompile(`^(\w+ \d+ \d+:\d+:\d+ \w+ app\[postgres\] \w+ )?\[(\w+)\] \[\d+-\d+\] ( sql_error_code = ` + SqlstateRegexp + ` (\w+):  )?(.+)`)
+var HerokuPostgresDebugRegexp = regexp.MustCompile(`^(\w+ \d+ \d+:\d+:\d+ \w+ app\[postgres\] \w+ )?\[(\w+)\] \[\d+-\d+\] (.+)`)
 
 func IsSupportedPrefix(prefix string) bool {
 	for _, supportedPrefix := range SupportedPrefixes {
@@ -146,8 +158,17 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 			prefix = LogPrefixCustom13
 		} else if LogPrefixCustom14Regexp.MatchString(line) {
 			prefix = LogPrefixCustom14
+		} else if LogPrefixCustom15Regexp.MatchString(line) {
+			prefix = LogPrefixCustom15
+		} else if LogPrefixCustom16Regexp.MatchString(line) {
+			prefix = LogPrefixCustom16
 		} else if LogPrefixSimpleRegexp.MatchString(line) {
 			prefix = LogPrefixSimple
+		} else if LogPrefixHeroku2Regexp.MatchString(line) {
+			prefix = LogPrefixHeroku2
+		} else if LogPrefixHeroku1Regexp.MatchString(line) {
+			// LogPrefixHeroku1 is a subset of 2, so it must be matched second
+			prefix = LogPrefixHeroku1
 		} else if RsyslogRegexp.MatchString(line) {
 			rsyslog = true
 		}
@@ -380,6 +401,29 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 			appPart = parts[8]
 			levelPart = parts[9]
 			contentPart = parts[10]
+		case LogPrefixCustom15: // "%m [%p] %q%u@%d "
+			parts := LogPrefixCustom15Regexp.FindStringSubmatch(line)
+			if len(parts) == 0 {
+				return
+			}
+			timePart = parts[1]
+			pidPart = parts[2]
+			userPart = parts[3]
+			dbPart = parts[4]
+			levelPart = parts[5]
+			contentPart = parts[6]
+		case LogPrefixCustom16: // "%t [%p] %q%u@%d %h "
+			parts := LogPrefixCustom16Regexp.FindStringSubmatch(line)
+			if len(parts) == 0 {
+				return
+			}
+			timePart = parts[1]
+			pidPart = parts[2]
+			userPart = parts[3]
+			dbPart = parts[4]
+			// skip %h (host)
+			levelPart = parts[6]
+			contentPart = parts[7]
 		case LogPrefixSimple: // "%t [%p] "
 			parts := LogPrefixSimpleRegexp.FindStringSubmatch(line)
 			if len(parts) == 0 {
@@ -389,6 +433,33 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 			pidPart = parts[2]
 			levelPart = parts[3]
 			contentPart = parts[4]
+		case LogPrefixHeroku1:
+			parts := LogPrefixHeroku1Regexp.FindStringSubmatch(line)
+			if len(parts) == 0 {
+				return
+			}
+			// skip %e
+			levelPart = parts[2]
+			contentPart = parts[3]
+		case LogPrefixHeroku2:
+			parts := LogPrefixHeroku2Regexp.FindStringSubmatch(line)
+			if len(parts) == 0 {
+				return
+			}
+			// skip %e
+			timePart = parts[2]
+			pidPart = parts[3]
+			// skip %s
+			// skip %c
+			// skip %v
+			// skip %x
+			logLineNumberPart = parts[8]
+			dbPart = parts[9]
+			// skip %r
+			userPart = parts[11]
+			appPart = parts[12]
+			levelPart = parts[13]
+			contentPart = parts[14]
 		default:
 			// Some callers use the content of unparsed lines to stitch multi-line logs together
 			logLine.Content = line
@@ -457,7 +528,7 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 	return
 }
 
-func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan time.Time) ([]state.LogLine, []state.PostgresQuerySample, int64) {
+func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan time.Time, server *state.Server) ([]state.LogLine, []state.PostgresQuerySample, int64) {
 	var logLines []state.LogLine
 	currentByteStart := initialByteStart
 	reader := bufio.NewReader(strings.NewReader(buffer))
@@ -489,6 +560,13 @@ func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan
 
 		// Ignore loglines which are outside our time window
 		if logLine.OccurredAt.Before(linesNewerThan) {
+			continue
+		}
+
+		// Ignore loglines that are ignored server-wide (e.g. because they are
+		// log_statement=all/log_duration=on lines). Note this intentionally
+		// runs after multi-line log lines have been stitched together.
+		if server.IgnoreLogLine(logLine.Content) {
 			continue
 		}
 
@@ -527,27 +605,22 @@ func DebugParseAndAnalyzeBuffer(buffer string) ([]state.LogLine, []state.Postgre
 
 		contentParts := HerokuPostgresDebugRegexp.FindStringSubmatch(line)
 		var logLine state.LogLine
-		if len(contentParts) == 7 {
-			logLine.Content = contentParts[6]
-			if contentParts[4] != "" && contentParts[5] != "" { // We have a SQLSTATE and a log level, so its a new Postgres log line
-				logLine.LogLevel = pganalyze_collector.LogLineInformation_LogLevel(pganalyze_collector.LogLineInformation_LogLevel_value[contentParts[5]])
-			} else {
+		var lineContent string
+		if len(contentParts) == 4 {
+			lineContent = contentParts[3]
+		} else {
+			lineContent = line
+		}
+		var ok bool
+		logLine, ok = ParseLogLineWithPrefix("", lineContent)
+		if !ok {
+			// Assume that a parsing error in a follow-on line means that we actually
+			// got additional data for the previous line
+			if len(logLines) > 0 && logLine.Content != "" {
 				logLines[len(logLines)-1].Content += logLine.Content
 				logLines[len(logLines)-1].ByteEnd += int64(len(logLine.Content))
-				continue
 			}
-		} else {
-			var ok bool
-			logLine, ok = ParseLogLineWithPrefix("", line)
-			if !ok {
-				// Assume that a parsing error in a follow-on line means that we actually
-				// got additional data for the previous line
-				if len(logLines) > 0 && logLine.Content != "" {
-					logLines[len(logLines)-1].Content += logLine.Content
-					logLines[len(logLines)-1].ByteEnd += int64(len(logLine.Content))
-				}
-				continue
-			}
+			continue
 		}
 
 		logLine.ByteStart = byteStart

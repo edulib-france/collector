@@ -28,7 +28,6 @@ var tests = []testpair{
 			Query:              "SELECT \"servers\".* FROM \"servers\" WHERE \"servers\".\"id\" = 1 LIMIT 2",
 			LogLevel:           pganalyze_collector.LogLineInformation_LOG,
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_DURATION,
-			Details:            map[string]interface{}{"duration_ms": 3205.8},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 35,
@@ -53,7 +52,6 @@ var tests = []testpair{
 			Query:              "SELECT * FROM x WHERE y = $1 LIMIT $2",
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_DURATION,
 			LogLevel:           pganalyze_collector.LogLineInformation_LOG,
-			Details:            map[string]interface{}{"duration_ms": 4079.697},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 43,
@@ -94,7 +92,6 @@ var tests = []testpair{
 			Query:              "SELECT * FROM x WHERE y = $1 AND z = $2 LIMIT $3",
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_DURATION,
 			LogLevel:           pganalyze_collector.LogLineInformation_LOG,
-			Details:            map[string]interface{}{"duration_ms": 4079.697},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 43,
@@ -550,8 +547,13 @@ var tests = []testpair{
 			UUID:               uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 34,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}, {
 			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
 			ParentUUID:         uuid.UUID{1},
@@ -842,8 +844,13 @@ var tests = []testpair{
 			UUID:               uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 32,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -918,15 +925,25 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_QUERY,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_QUERY,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 28,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}, {
 			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 24,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -953,8 +970,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 36,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -1052,8 +1074,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 135,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	}, {
@@ -1103,8 +1130,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 30,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -1432,6 +1464,165 @@ var tests = []testpair{
 	},
 	{
 		[]state.LogLine{{
+			Content: "automatic vacuum of table \"mydb.myschema.mytable\": index scans: 0\n" +
+				"	pages: 0 removed, 14761 remain, 0 skipped due to pins, 12461 skipped frozen\n" +
+				"	tuples: 0 removed, 122038 remain, 14433 are dead but not yet removable, oldest xmin: 538040633\n" +
+				"	index scan bypassed: 255 pages from table (1.73% of total) have 661 dead item identifiers\n" +
+				"	I/O timings: read: 0.000 ms, write: 0.000 ms\n" +
+				"	avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\n" +
+				"	buffer usage: 4420 hits, 0 misses, 0 dirtied\n" +
+				"	WAL usage: 1 records, 0 full page images, 245 bytes\n" +
+				"	system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.01 s",
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "mydb",
+			SchemaName:     "myschema",
+			RelationName:   "mytable",
+			Details: map[string]interface{}{
+				"aggressive":               false,
+				"anti_wraparound":          false,
+				"num_index_scans":          0,
+				"pages_removed":            0,
+				"rel_pages":                14761,
+				"pinskipped_pages":         0,
+				"frozenskipped_pages":      12461,
+				"tuples_deleted":           0,
+				"new_rel_tuples":           122038,
+				"new_dead_tuples":          14433,
+				"oldest_xmin":              538040633,
+				"lpdead_index_scan":        "bypassed",
+				"lpdead_item_pages":        255,
+				"lpdead_item_page_percent": 1.73,
+				"lpdead_items":             661,
+				"blk_read_time":            0,
+				"blk_write_time":           0,
+				"read_rate_mb":             0,
+				"write_rate_mb":            0,
+				"vacuum_page_hit":          4420,
+				"vacuum_page_miss":         0,
+				"vacuum_page_dirty":        0,
+				"wal_records":              1,
+				"wal_fpi":                  0,
+				"wal_bytes":                245,
+				"rusage_kernel":            0.00,
+				"rusage_user":              0.00,
+				"elapsed_secs":             0.01,
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content: "automatic aggressive vacuum to prevent wraparound of table \"mydb.myschema.mytable\": index scans: 0\n" +
+				"	pages: 0 removed, 241245 remain, 0 skipped due to pins, 241244 skipped frozen\n" +
+				"	tuples: 0 removed, 17418745 remain, 0 are dead but not yet removable, oldest xmin: 538040633\n" +
+				"	index scan not needed: 3 pages from table (0.01% of total) had 0 dead item identifiers removed\n" +
+				"	I/O timings: read: 10.540 ms, write: 0.000 ms\n" +
+				"	avg read rate: 38.748 MB/s, avg write rate: 0.538 MB/s\n" +
+				"	buffer usage: 50 hits, 72 misses, 1 dirtied\n" +
+				"	WAL usage: 1 records, 1 full page images, 2147 bytes\n" +
+				"	system usage: CPU: user: 1.23 s, system: 4.56 s, elapsed: 0.01 s",
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "mydb",
+			SchemaName:     "myschema",
+			RelationName:   "mytable",
+			Details: map[string]interface{}{
+				"aggressive":               true,
+				"anti_wraparound":          true,
+				"num_index_scans":          0,
+				"pages_removed":            0,
+				"rel_pages":                241245,
+				"pinskipped_pages":         0,
+				"frozenskipped_pages":      241244,
+				"tuples_deleted":           0,
+				"new_rel_tuples":           17418745,
+				"new_dead_tuples":          0,
+				"oldest_xmin":              538040633,
+				"lpdead_index_scan":        "not needed",
+				"lpdead_item_pages":        3,
+				"lpdead_item_page_percent": 0.01,
+				"lpdead_items":             0,
+				"blk_read_time":            10.54,
+				"blk_write_time":           0,
+				"read_rate_mb":             38.748,
+				"write_rate_mb":            0.538,
+				"vacuum_page_hit":          50,
+				"vacuum_page_miss":         72,
+				"vacuum_page_dirty":        1,
+				"wal_records":              1,
+				"wal_fpi":                  1,
+				"wal_bytes":                2147,
+				"rusage_user":              1.23,
+				"rusage_kernel":            4.56,
+				"elapsed_secs":             0.01,
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content: "automatic vacuum of table \"alloydbadmin.public.heartbeat\": index scans: 0, elapsed time: 0 s, index vacuum time: 0 ms," +
+				" pages: 0 removed, 1 remain, 0 skipped due to pins, 0 skipped frozen 0 skipped using mintxid," +
+				" tuples: 60 removed, 1 remain, 0 are dead but not yet removable, oldest xmin: 1782," +
+				" index scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed," +
+				" I/O timings: read: 0.000 ms, write: 0.000 ms," +
+				" avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s," +
+				" buffer usage: 42 hits, 0 misses, 0 dirtied," +
+				" WAL usage: 3 records, 0 full page images, 286 bytes," +
+				" system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.01 s",
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "alloydbadmin",
+			SchemaName:     "public",
+			RelationName:   "heartbeat",
+			Details: map[string]interface{}{
+				"aggressive":               false,
+				"anti_wraparound":          false,
+				"num_index_scans":          0,
+				"pages_removed":            0,
+				"rel_pages":                1,
+				"pinskipped_pages":         0,
+				"frozenskipped_pages":      0,
+				"tuples_deleted":           60,
+				"new_rel_tuples":           1,
+				"new_dead_tuples":          0,
+				"oldest_xmin":              1782,
+				"lpdead_index_scan":        "not needed",
+				"lpdead_item_pages":        0,
+				"lpdead_item_page_percent": 0,
+				"lpdead_items":             0,
+				"blk_read_time":            0,
+				"blk_write_time":           0,
+				"read_rate_mb":             0,
+				"write_rate_mb":            0,
+				"vacuum_page_hit":          42,
+				"vacuum_page_miss":         0,
+				"vacuum_page_dirty":        0,
+				"wal_records":              3,
+				"wal_fpi":                  0,
+				"wal_bytes":                286,
+				"rusage_user":              0.00,
+				"rusage_kernel":            0.00,
+				"elapsed_secs":             0.01,
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
 			Content: "automatic aggressive vacuum of table \"demo_pgbench.public.pgbench_tellers\": index scans: 0" +
 				" pages: 0 removed, 839 remain, 0 skipped due to pins, 705 skipped frozen" +
 				"	tuples: 1849 removed, 2556 remain, 5 are dead but not yet removable, oldest xmin: 448424944" +
@@ -1509,6 +1700,37 @@ var tests = []testpair{
 			ReviewedForSecrets: true,
 		}},
 		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content: "automatic analyze of table \"mydb.myschema.mytable\"\n" +
+				"	I/O timings: read: 1.027 ms, write: 0.000 ms\n" +
+				"	avg read rate: 1.339 MB/s, avg write rate: 8.705 MB/s\n" +
+				"	buffer usage: 1369 hits, 6 misses, 39 dirtied\n" +
+				"	system usage: CPU: user: 0.02 s, system: 0.00 s, elapsed: 0.03 s",
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOANALYZE_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "mydb",
+			SchemaName:     "myschema",
+			RelationName:   "mytable",
+			Details: map[string]interface{}{
+				"blk_read_time":      1.027,
+				"blk_write_time":     0.000,
+				"read_rate_mb":       1.339,
+				"write_rate_mb":      8.705,
+				"analyze_page_hit":   1369,
+				"analyze_page_miss":  6,
+				"analyze_page_dirty": 39,
+				"rusage_user":        0.02,
+				"rusage_kernel":      0.00,
+				"elapsed_secs":       0.03,
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
 	}, {
 		[]state.LogLine{{
 			Content:  "skipping vacuum of \"mytable\" --- lock not available",
@@ -1555,8 +1777,13 @@ var tests = []testpair{
 			UUID:               uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 8,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	}, {
@@ -1575,8 +1802,13 @@ var tests = []testpair{
 			UUID:               uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 8,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -1818,8 +2050,13 @@ var tests = []testpair{
 			},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 50,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	}, {
@@ -1886,8 +2123,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 10,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	}, {
@@ -1934,8 +2176,13 @@ var tests = []testpair{
 			},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 8,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2155,8 +2402,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 8,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2452,8 +2704,13 @@ var tests = []testpair{
 				Kind:      state.TableDataLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 72,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2478,8 +2735,13 @@ var tests = []testpair{
 				Kind:      state.ParsingErrorLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 36,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2499,8 +2761,13 @@ var tests = []testpair{
 			Query:              "SELECT * FROM (SELECT 1",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 23,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2525,8 +2792,13 @@ var tests = []testpair{
 				Kind:      state.TableDataLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 42,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2570,8 +2842,13 @@ var tests = []testpair{
 				Kind:      state.TableDataLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 15,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2591,8 +2868,13 @@ var tests = []testpair{
 			Query:              "INSERT INTO x(y) VALUES ('zzzzz')",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 33,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2628,8 +2910,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 37,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2661,8 +2948,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 39,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2694,8 +2986,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 17,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2722,8 +3019,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 24,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2743,8 +3045,13 @@ var tests = []testpair{
 			Query:              "INSERT INTO x(y) VALUES (1, 2)",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 30,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2764,8 +3071,13 @@ var tests = []testpair{
 			Query:              "SELECT * FROM x WHERE id = ANY ($1)",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 35,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2785,8 +3097,13 @@ var tests = []testpair{
 			Query:              "SELECT def, MAX(def) FROM abc",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 29,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2806,8 +3123,13 @@ var tests = []testpair{
 			Query:              "SELECT * FROM x",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 15,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2827,8 +3149,13 @@ var tests = []testpair{
 			Query:              "SELECT y FROM x",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 15,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2848,8 +3175,13 @@ var tests = []testpair{
 			Query:              "ALTER TABLE x DROP COLUMN y;",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 28,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2869,8 +3201,13 @@ var tests = []testpair{
 			Query:              "SELECT z FROM x, y",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 18,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2897,8 +3234,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 19,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2925,8 +3267,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 12,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2946,8 +3293,13 @@ var tests = []testpair{
 			Query:              "SELECT * FROM my_schema.table",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 29,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2967,8 +3319,13 @@ var tests = []testpair{
 			Query:              "SELECT 1",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 8,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -2988,8 +3345,13 @@ var tests = []testpair{
 			Query:              "INSERT INTO x (y, z) VALUES ('a', 1) ON CONFLICT (y) DO UPDATE SET z = EXCLUDED.z",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 81,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3012,8 +3374,13 @@ var tests = []testpair{
 			Query:              "INSERT INTO x (y, z) VALUES ('a', 1), ('a', 2) ON CONFLICT (y) DO UPDATE SET z = EXCLUDED.z",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 91,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}, {
 			LogLevel:           pganalyze_collector.LogLineInformation_HINT,
 			ParentUUID:         uuid.UUID{1},
@@ -3037,8 +3404,13 @@ var tests = []testpair{
 			Query:              "SELECT abc::date FROM x",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 23,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3058,8 +3430,13 @@ var tests = []testpair{
 			Query:              "SELECT 1/0",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 10,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3093,8 +3470,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 12,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3114,8 +3496,13 @@ var tests = []testpair{
 			Query:              "INSERT INTO x(y) VALUES (10000000000000)",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 40,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3135,8 +3522,13 @@ var tests = []testpair{
 			Query:              "SELECT regexp_replace('test', '<(?i:test)', '');",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 48,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3156,8 +3548,13 @@ var tests = []testpair{
 			Query:              "SELECT $1;",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 10,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3177,8 +3574,13 @@ var tests = []testpair{
 			Query:              "ROLLBACK TO x",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 13,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3202,8 +3604,13 @@ var tests = []testpair{
 				Kind:      state.ParsingErrorLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_QUERY,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_QUERY,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 9,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3228,8 +3635,13 @@ var tests = []testpair{
 				Kind:      state.ParsingErrorLogSecret,
 			}},
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 9,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3266,8 +3678,13 @@ var tests = []testpair{
 			Query:              "SELECT \"1",
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 9,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3301,8 +3718,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 9,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3329,8 +3751,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 52,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},
@@ -3377,12 +3804,11 @@ var tests = []testpair{
 		[]state.LogLine{{
 			Query:              "SELECT abalance FROM pgbench_accounts WHERE aid = 2262632;",
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_AUTO_EXPLAIN,
-			Details:            map[string]interface{}{"duration_ms": 2334.085},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 30,
 				ByteEnd:   1025,
-				Kind:      state.UnidentifiedLogSecret,
+				Kind:      state.StatementTextLogSecret,
 			}},
 		}},
 		[]state.PostgresQuerySample{{
@@ -3391,7 +3817,39 @@ var tests = []testpair{
 			HasExplain:    true,
 			ExplainSource: pganalyze_collector.QuerySample_AUTO_EXPLAIN_EXPLAIN_SOURCE,
 			ExplainFormat: pganalyze_collector.QuerySample_JSON_EXPLAIN_FORMAT,
-			ExplainOutput: "[{\"Plan\":{\"Actual Loops\":1,\"Actual Rows\":1,\"Alias\":\"pgbench_accounts\",\"I/O Read Time\":0,\"I/O Write Time\":0,\"Index Cond\":\"(pgbench_accounts.aid = 2262632)\",\"Index Name\":\"pgbench_accounts_pkey\",\"Local Dirtied Blocks\":0,\"Local Hit Blocks\":0,\"Local Read Blocks\":0,\"Local Written Blocks\":0,\"Node Type\":\"Index Scan\",\"Output\":[\"abalance\"],\"Parallel Aware\":false,\"Plan Rows\":1,\"Plan Width\":4,\"Relation Name\":\"pgbench_accounts\",\"Rows Removed by Index Recheck\":0,\"Scan Direction\":\"Forward\",\"Schema\":\"public\",\"Shared Dirtied Blocks\":0,\"Shared Hit Blocks\":4,\"Shared Read Blocks\":0,\"Shared Written Blocks\":0,\"Startup Cost\":0.43,\"Temp Read Blocks\":0,\"Temp Written Blocks\":0,\"Total Cost\":8.45}}]",
+			ExplainOutputJSON: &state.ExplainPlanContainer{
+				Plan: []byte("{\n" +
+					"	    \"Node Type\": \"Index Scan\",\n" +
+					"	    \"Parallel Aware\": false,\n" +
+					"	    \"Scan Direction\": \"Forward\",\n" +
+					"	    \"Index Name\": \"pgbench_accounts_pkey\",\n" +
+					"	    \"Relation Name\": \"pgbench_accounts\",\n" +
+					"	    \"Schema\": \"public\",\n" +
+					"	    \"Alias\": \"pgbench_accounts\",\n" +
+					"	    \"Startup Cost\": 0.43,\n" +
+					"	    \"Total Cost\": 8.45,\n" +
+					"	    \"Plan Rows\": 1,\n" +
+					"	    \"Plan Width\": 4,\n" +
+					"	    \"Actual Rows\": 1,\n" +
+					"	    \"Actual Loops\": 1,\n" +
+					"	    \"Output\": [\"abalance\"],\n" +
+					"	    \"Index Cond\": \"(pgbench_accounts.aid = 2262632)\",\n" +
+					"	    \"Rows Removed by Index Recheck\": 0,\n" +
+					"	    \"Shared Hit Blocks\": 4,\n" +
+					"	    \"Shared Read Blocks\": 0,\n" +
+					"	    \"Shared Dirtied Blocks\": 0,\n" +
+					"	    \"Shared Written Blocks\": 0,\n" +
+					"	    \"Local Hit Blocks\": 0,\n" +
+					"	    \"Local Read Blocks\": 0,\n" +
+					"	    \"Local Dirtied Blocks\": 0,\n" +
+					"	    \"Local Written Blocks\": 0,\n" +
+					"	    \"Temp Read Blocks\": 0,\n" +
+					"	    \"Temp Written Blocks\": 0,\n" +
+					"	    \"I/O Read Time\": 0.000,\n" +
+					"	    \"I/O Write Time\": 0.000\n" +
+					"	  }"),
+				Triggers: &([]state.ExplainPlanTrigger{}),
+			},
 		}},
 	},
 	{
@@ -3402,12 +3860,12 @@ var tests = []testpair{
 		}},
 		[]state.LogLine{{
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_AUTO_EXPLAIN,
-			Details:            map[string]interface{}{"duration_ms": 2334.085, "truncated": true},
+			Details:            map[string]interface{}{"query_sample_error": "auto_explain output was truncated and can't be parsed as JSON"},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 30,
 				ByteEnd:   132,
-				Kind:      state.UnidentifiedLogSecret,
+				Kind:      state.StatementTextLogSecret,
 			}},
 		}},
 		nil,
@@ -3425,12 +3883,11 @@ var tests = []testpair{
 		[]state.LogLine{{
 			Query:              "UPDATE pgbench_branches SET bbalance = bbalance + 2656 WHERE bid = 59;",
 			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_AUTO_EXPLAIN,
-			Details:            map[string]interface{}{"duration_ms": 1681.452},
 			ReviewedForSecrets: true,
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 31,
 				ByteEnd:   474,
-				Kind:      state.UnidentifiedLogSecret,
+				Kind:      state.StatementTextLogSecret,
 			}},
 		}},
 		[]state.PostgresQuerySample{{
@@ -3439,7 +3896,7 @@ var tests = []testpair{
 			HasExplain:    true,
 			ExplainSource: pganalyze_collector.QuerySample_AUTO_EXPLAIN_EXPLAIN_SOURCE,
 			ExplainFormat: pganalyze_collector.QuerySample_TEXT_EXPLAIN_FORMAT,
-			ExplainOutput: "Update on public.pgbench_branches  (cost=0.27..8.29 rows=1 width=370) (actual rows=0 loops=1)\n" +
+			ExplainOutputText: "Update on public.pgbench_branches  (cost=0.27..8.29 rows=1 width=370) (actual rows=0 loops=1)\n" +
 				"    Buffers: shared hit=7\n" +
 				"    ->  Index Scan using pgbench_branches_pkey on public.pgbench_branches  (cost=0.27..8.29 rows=1 width=370) (actual rows=1 loops=1)\n" +
 				"          Output: bid, (bbalance + 2656), filler, ctid\n" +
@@ -3476,8 +3933,13 @@ var tests = []testpair{
 			ParentUUID:         uuid.UUID{1},
 			ReviewedForSecrets: true,
 		}, {
-			LogLevel:   pganalyze_collector.LogLineInformation_STATEMENT,
-			ParentUUID: uuid.UUID{1},
+			LogLevel:           pganalyze_collector.LogLineInformation_STATEMENT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteEnd: 94,
+				Kind:    state.StatementTextLogSecret,
+			}},
 		}},
 		nil,
 	},

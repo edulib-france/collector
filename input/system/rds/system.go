@@ -36,11 +36,6 @@ func GetSystemState(config config.ServerConfig, logger *util.Logger) (system sta
 		return
 	}
 
-	if instance == nil {
-		logger.PrintWarning("Could not find RDS instance in AWS, skipping system data")
-		return
-	}
-
 	isAurora := util.StringPtrToString(instance.Engine) == "aurora-postgresql"
 
 	system.Info.AmazonRds = &state.SystemInfoAmazonRds{
@@ -66,6 +61,13 @@ func GetSystemState(config config.ServerConfig, logger *util.Logger) (system sta
 		DeletionProtection:         util.BoolPtrToBool(instance.DeletionProtection),
 		IsAuroraPostgres:           isAurora,
 	}
+
+	tags := make(map[string]string)
+	for _, tag := range instance.TagList {
+		tags[*tag.Key] = util.StringPtrToString(tag.Value)
+	}
+
+	system.Info.ResourceTags = tags
 
 	for _, exportName := range instance.EnabledCloudwatchLogsExports {
 		if util.StringPtrToString(exportName) == "postgresql" {

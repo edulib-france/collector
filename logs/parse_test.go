@@ -427,6 +427,56 @@ var parseTests = []parseTestpair{
 		},
 		true,
 	},
+	// Custom 15 format
+	{
+		"",
+		"2022-07-22 06:13:13.389 UTC [1] LOG:  database system is ready to accept connections",
+		state.LogLine{
+			OccurredAt: time.Date(2022, time.July, 22, 6, 13, 13, 389*1000*1000, time.UTC),
+			LogLevel:   pganalyze_collector.LogLineInformation_LOG,
+			BackendPid: 1,
+			Content:    "database system is ready to accept connections",
+		},
+		true,
+	},
+	{
+		"",
+		"2022-07-22 06:13:45.781 UTC [75] myuser@mydb LOG:  connection authorized: user=myuser database=mydb application_name=psql",
+		state.LogLine{
+			OccurredAt: time.Date(2022, time.July, 22, 6, 13, 45, 781*1000*1000, time.UTC),
+			Username:   "myuser",
+			Database:   "mydb",
+			LogLevel:   pganalyze_collector.LogLineInformation_LOG,
+			BackendPid: 75,
+			Content:    "connection authorized: user=myuser database=mydb application_name=psql",
+		},
+		true,
+	},
+	// Custom 16 format
+	{
+		"",
+		"2022-07-22 06:13:12 UTC [1] LOG:  starting PostgreSQL 14.2 (Debian 14.2-1.pgdg110+1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 10.2.1-6) 10.2.1 20210110, 64-bit",
+		state.LogLine{
+			OccurredAt: time.Date(2022, time.July, 22, 6, 13, 12, 0, time.UTC),
+			LogLevel:   pganalyze_collector.LogLineInformation_LOG,
+			BackendPid: 1,
+			Content:    "starting PostgreSQL 14.2 (Debian 14.2-1.pgdg110+1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 10.2.1-6) 10.2.1 20210110, 64-bit",
+		},
+		true,
+	},
+	{
+		"",
+		"2022-07-22 06:14:23 UTC [76] my-user@my-db 1.2.3.4 LOG:  disconnection: session time: 0:00:01.667 user=my-user database=my-db host=1.2.3.4 port=5678",
+		state.LogLine{
+			OccurredAt: time.Date(2022, time.July, 22, 6, 14, 23, 0, time.UTC),
+			Username:   "my-user",
+			Database:   "my-db",
+			LogLevel:   pganalyze_collector.LogLineInformation_LOG,
+			BackendPid: 76,
+			Content:    "disconnection: session time: 0:00:01.667 user=my-user database=my-db host=1.2.3.4 port=5678",
+		},
+		true,
+	},
 	// Simple format
 	{
 		"",
@@ -447,6 +497,29 @@ var parseTests = []parseTestpair{
 			LogLevel:   pganalyze_collector.LogLineInformation_LOG,
 			BackendPid: 3184,
 			Content:    "pganalyze-collector-identify: server1",
+		},
+		true,
+	},
+	{
+		"",
+		` sql_error_code = 28000 FATAL:  no pg_hba.conf entry for host "127.0.0.1", user "postgres", database "postgres", SSL off`,
+		state.LogLine{
+			LogLevel: pganalyze_collector.LogLineInformation_FATAL,
+			Content:  "no pg_hba.conf entry for host \"127.0.0.1\", user \"postgres\", database \"postgres\", SSL off",
+		},
+		true,
+	},
+	{
+		"",
+		` sql_error_code = 28000 time_ms = "2022-06-02 22:48:20.807 UTC" pid="11666" proc_start_time="2022-06-02 22:48:20 UTC" session_id="62993e34.2d92" vtid="6/17007" tid="0" log_line="1" database="postgres" connection_source="127.0.0.1(36532)" user="postgres" application_name="[unknown]" FATAL:  no pg_hba.conf entry for host "127.0.0.1", user "postgres", database "postgres", SSL off`,
+		state.LogLine{
+			OccurredAt:    time.Date(2022, time.June, 2, 22, 48, 20, 807*1000*1000, time.UTC),
+			Username:      "postgres",
+			Database:      "postgres",
+			LogLevel:      pganalyze_collector.LogLineInformation_FATAL,
+			BackendPid:    11666,
+			LogLineNumber: 1,
+			Content:       "no pg_hba.conf entry for host \"127.0.0.1\", user \"postgres\", database \"postgres\", SSL off",
 		},
 		true,
 	},

@@ -30,6 +30,8 @@ const (
 	HerokuSystem
 	GoogleCloudSQLSystem
 	AzureDatabaseSystem
+	CrunchyBridgeSystem
+	AivenSystem
 )
 
 type SystemInfo struct {
@@ -37,8 +39,9 @@ type SystemInfo struct {
 	SystemScope string
 	SystemID    string
 
-	SelfHosted *SystemInfoSelfHosted
-	AmazonRds  *SystemInfoAmazonRds
+	SelfHosted   *SystemInfoSelfHosted
+	AmazonRds    *SystemInfoAmazonRds
+	ResourceTags map[string]string
 
 	BootTime time.Time
 }
@@ -197,6 +200,8 @@ type Disk struct {
 	Scheduler       string // Linux Scheduler (noop/anticipatory/deadline/cfq)
 	ProvisionedIOPS uint32 // If applicable, how many IOPS are provisioned for this device
 	Encrypted       bool   // If applicable, is this device encrypted? (default false)
+
+	ComponentDisks []string // Identifiers for component disks (e.g. for a software RAID)
 }
 
 // DiskStats - Statistics about an individual disk device in the system

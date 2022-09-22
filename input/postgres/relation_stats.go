@@ -12,7 +12,13 @@ const relationStatsSQLDefaultOptionalFields = "NULL"
 const relationStatsSQLpg94OptionalFields = "s.n_mod_since_analyze"
 
 const relationStatsSQL = `
-WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+WITH locked_relids AS (
+	SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL
+),
+locked_relids_with_parents AS (
+	SELECT DISTINCT inhparent relid FROM pg_catalog.pg_inherits WHERE inhrelid IN (SELECT relid FROM locked_relids)
+	UNION SELECT relid FROM locked_relids
+)
 SELECT c.oid,
 			 COALESCE(pg_catalog.pg_table_size(c.oid), 0) +
 			 COALESCE((SELECT pg_catalog.sum(pg_catalog.pg_table_size(inhrelid))
@@ -50,10 +56,10 @@ SELECT c.oid,
 	LEFT JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
 	LEFT JOIN pg_catalog.pg_stat_user_tables s ON (s.relid = c.oid)
 	LEFT JOIN pg_catalog.pg_statio_user_tables sio USING (relid)
- WHERE c.oid NOT IN (SELECT relid FROM locked_relids)
+ WHERE c.oid NOT IN (SELECT relid FROM locked_relids_with_parents)
        AND c.relkind IN ('r','v','m','p')
 			 AND c.relpersistence <> 't'
-			 AND c.relname NOT IN ('pg_stat_statements')
+			 AND c.oid NOT IN (SELECT pd.objid FROM pg_catalog.pg_depend pd WHERE pd.deptype = 'e' AND pd.classid = 'pg_catalog.pg_class'::regclass)
 			 AND n.nspname NOT IN ('pg_catalog','pg_toast','information_schema')
 			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)
 `
@@ -171,7 +177,7 @@ func GetIndexStats(db *sql.DB, postgresVersion state.PostgresVersion, ignoreRege
 	return
 }
 
-func GetColumnStats(logger *util.Logger, db *sql.DB, globalCollectionOpts state.CollectionOpts, systemType string) (columnStats state.PostgresColumnStatsMap, err error) {
+func GetColumnStats(logger *util.Logger, db *sql.DB, globalCollectionOpts state.CollectionOpts, systemType string, dbName string) (columnStats state.PostgresColumnStatsMap, err error) {
 	var sourceTable string
 
 	helperExists := false
@@ -182,9 +188,9 @@ func GetColumnStats(logger *util.Logger, db *sql.DB, globalCollectionOpts state.
 		sourceTable = "pganalyze.get_column_stats()"
 	} else {
 		if systemType != "heroku" && !connectedAsSuperUser(db, systemType) && globalCollectionOpts.TestRun {
-			logger.PrintInfo("Warning: Limited access to table column statistics detected. Please setup" +
-				" the monitoring helper function pganalyze.get_column_stats (https://github.com/pganalyze/collector#setting-up-a-restricted-monitoring-user)" +
-				" or connect as superuser, to get column statistics for all tables.")
+			logger.PrintInfo("Warning: Limited access to table column statistics detected in database %s. Please set up"+
+				" the monitoring helper function pganalyze.get_column_stats (https://github.com/pganalyze/collector#setting-up-a-restricted-monitoring-user)"+
+				" or connect as superuser, to get column statistics for all tables.", dbName)
 		}
 		sourceTable = "pg_catalog.pg_stats"
 	}

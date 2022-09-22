@@ -23,7 +23,6 @@ import (
 
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/input/postgres"
-	"github.com/pganalyze/collector/input/system/heroku"
 	"github.com/pganalyze/collector/input/system/selfhosted"
 	"github.com/pganalyze/collector/logs"
 	"github.com/pganalyze/collector/runner"
@@ -72,6 +71,9 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 
 	serverConfigs := conf.Servers
 	for _, config := range serverConfigs {
+		if globalCollectionOpts.TestRun && globalCollectionOpts.TestSection != "" && globalCollectionOpts.TestSection != config.SectionName {
+			continue
+		}
 		servers = append(servers, &state.Server{Config: config, StateMutex: &sync.Mutex{}, LogStateMutex: &sync.Mutex{}, ActivityStateMutex: &sync.Mutex{}, CollectionStatusMutex: &sync.Mutex{}})
 		if config.EnableReports {
 			hasAnyReportsEnabled = true
@@ -111,7 +113,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		} else if globalCollectionOpts.TestExplain {
 			for _, server := range servers {
 				prefixedLogger := logger.WithPrefix(server.Config.SectionName)
-				err := logs.EmitTestExplain(server, globalCollectionOpts, prefixedLogger)
+				err := runner.EmitTestExplain(server, globalCollectionOpts, prefixedLogger)
 				if err != nil {
 					prefixedLogger.PrintError("Failed to run test explain: %s", err)
 				}
@@ -193,7 +195,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase)
 	} else if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
 		// Even if logs are deactivated, Heroku still requires us to have a functioning web server
-		heroku.SetupHttpHandlerDummy()
+		util.SetupHttpHandlerDummy()
 	}
 
 	if hasAnyActivityEnabled {
@@ -230,6 +232,7 @@ func main() {
 	var testReport string
 	var testRunLogs bool
 	var testExplain bool
+	var testSection string
 	var forceStateUpdate bool
 	var configFilename string
 	var stateFilename string
@@ -239,6 +242,7 @@ func main() {
 	var writeHeapProfile bool
 	var testRunAndTrace bool
 	var logToSyslog bool
+	var logToJSON bool
 	var logNoTimestamps bool
 	var reloadRun bool
 
@@ -250,9 +254,12 @@ func main() {
 	flag.StringVar(&testReport, "test-report", "", "Tests a particular report and returns its output as JSON")
 	flag.BoolVar(&testRunLogs, "test-logs", false, "Tests whether log collection works (does not test privilege dropping for local log collection, use --test for that)")
 	flag.BoolVar(&testExplain, "test-explain", false, "Tests whether EXPLAIN collection works by issuing a dummy query (ensure log collection works first)")
+	flag.StringVar(&testSection, "test-section", "", "Tests a particular section of the config file, i.e. a specific server, and ignores all other config sections")
 	flag.BoolVar(&reloadRun, "reload", false, "Reloads the collector daemon thats running on the host")
 	flag.BoolVarP(&logger.Verbose, "verbose", "v", false, "Outputs additional debugging information, use this if you're encoutering errors or other problems")
+	flag.BoolVarP(&logger.Quiet, "quiet", "q", false, "Only outputs error messages to the logs and hides informational and warning messages")
 	flag.BoolVar(&logToSyslog, "syslog", false, "Write all log output to syslog instead of stderr (disabled by default)")
+	flag.BoolVar(&logToJSON, "json-logs", false, "Write all log output to stderr as newline delimited json (disabled by default, ignored if --syslog is set)")
 	flag.BoolVar(&logNoTimestamps, "no-log-timestamps", false, "Disable timestamps in the log output (automatically done when syslog is enabled)")
 	flag.BoolVar(&dryRun, "dry-run", false, "Print JSON data that would get sent to web service (without actually sending) and exit afterwards")
 	flag.BoolVar(&dryRunLogs, "dry-run-logs", false, "Print JSON data for log snapshot (without actually sending) and exit afterwards")
@@ -294,6 +301,7 @@ func main() {
 			panic(fmt.Errorf("Could not setup syslog as requested: %s", err))
 		}
 	} else {
+		logger.UseJSON = logToJSON
 		logger.Destination = log.New(os.Stderr, "", logFlags)
 	}
 
@@ -319,6 +327,7 @@ func main() {
 		TestReport:               testReport,
 		TestRunLogs:              testRunLogs || dryRunLogs,
 		TestExplain:              testExplain,
+		TestSection:              testSection,
 		DebugLogs:                debugLogs,
 		DiscoverLogLocation:      discoverLogLocation,
 		CollectPostgresRelations: !noPostgresRelations,
@@ -474,7 +483,7 @@ func checkOneInitialCollectionStatus(server *state.Server, opts state.Collection
 	if err != nil {
 		return err
 	}
-	logsDisabled, logsDisabledReason := logs.ValidateLogCollectionConfig(server, settings)
+	logsDisabled, logsIgnoreStatement, logsIgnoreDuration, logsDisabledReason := logs.ValidateLogCollectionConfig(server, settings)
 
 	var isIgnoredReplica bool
 	var collectionDisabledReason string
@@ -501,6 +510,7 @@ func checkOneInitialCollectionStatus(server *state.Server, opts state.Collection
 		CollectionDisabled:        isIgnoredReplica,
 		CollectionDisabledReason:  collectionDisabledReason,
 	}
+	server.SetLogIgnoreFlags(logsIgnoreStatement, logsIgnoreDuration)
 
 	return nil
 }

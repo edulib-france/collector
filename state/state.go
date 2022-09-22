@@ -1,7 +1,9 @@
 package state
 
 import (
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	raven "github.com/getsentry/raven-go"
@@ -60,6 +62,7 @@ type TransientState struct {
 	Replication   PostgresReplication
 	Settings      []PostgresSetting
 	BackendCounts []PostgresBackendCount
+	Extensions    []PostgresExtension
 
 	Version PostgresVersion
 
@@ -87,6 +90,8 @@ type CollectorConfig struct {
 	DbURLRedacted              string
 	AwsRegion                  string
 	AwsDbInstanceId            string
+	AwsDbClusterID             string
+	AwsDbClusterReadonly       bool
 	AwsHasAccessKeyId          bool
 	AwsHasAssumeRole           bool
 	AwsHasAccountId            bool
@@ -99,15 +104,24 @@ type CollectorConfig struct {
 	AzureAdClientId            string
 	AzureHasAdCertificate      bool
 	GcpCloudsqlInstanceId      string
+	GcpAlloyDBClusterID        string
+	GcpAlloyDBInstanceID       string
 	GcpPubsubSubscription      string
 	GcpHasCredentialsFile      bool
 	GcpProjectId               string
+	CrunchyBridgeClusterId     string
+	AivenProjectId             string
+	AivenServiceId             string
 	ApiSystemId                string
 	ApiSystemType              string
 	ApiSystemScope             string
+	ApiSystemIdFallback        string
+	ApiSystemTypeFallback      string
 	ApiSystemScopeFallback     string
 	DbLogLocation              string
 	DbLogDockerTail            string
+	DbLogSyslogServer          string
+	DbLogPgReadFile            bool
 	IgnoreTablePattern         string
 	IgnoreSchemaRegexp         string
 	QueryStatsInterval         int32
@@ -182,6 +196,7 @@ type CollectionOpts struct {
 	TestReport          string
 	TestRunLogs         bool
 	TestExplain         bool
+	TestSection         string
 	DebugLogs           bool
 	DiscoverLogLocation bool
 
@@ -251,4 +266,41 @@ type Server struct {
 
 	CollectionStatus      CollectionStatus
 	CollectionStatusMutex *sync.Mutex
+
+	// Boolean flags for which log lines should be ignored for processing
+	//
+	// Internally this uses atomics (not a mutex) due to noticable performance
+	// differences (see https://groups.google.com/g/golang-nuts/c/eIqkhXh9PLg),
+	// as we access this in high frequency log-related code paths.
+	LogIgnoreFlags uint32
+}
+
+const (
+	LOG_IGNORE_STATEMENT uint32 = 1 << iota
+	LOG_IGNORE_DURATION
+)
+
+func (s *Server) SetLogIgnoreFlags(ignoreStatement bool, ignoreDuration bool) {
+	var newFlags uint32
+	if ignoreStatement {
+		newFlags |= LOG_IGNORE_STATEMENT
+	}
+	if ignoreDuration {
+		newFlags |= LOG_IGNORE_DURATION
+	}
+	atomic.StoreUint32(&s.LogIgnoreFlags, newFlags)
+}
+
+// IgnoreLogLine - helper function that lets callers determine whether a log
+// line should be filtered out early (before any analysis)
+//
+// This is mainly intended to support Log Insights for servers that have very
+// high log volume due to running with log_statement=all or log_duration=on
+// (something we can't parse effectively with today's regexp-based log parsing),
+// and allow other less frequent log events to be analyzed.
+func (s *Server) IgnoreLogLine(content string) bool {
+	flags := atomic.LoadUint32(&s.LogIgnoreFlags)
+
+	return (flags&LOG_IGNORE_STATEMENT != 0 && (strings.HasPrefix(content, "statement: ") || strings.HasPrefix(content, "execute ") || strings.HasPrefix(content, "parameters: "))) ||
+		(flags&LOG_IGNORE_DURATION != 0 && strings.HasPrefix(content, "duration: ") && !strings.Contains(content, " ms  plan:\n"))
 }

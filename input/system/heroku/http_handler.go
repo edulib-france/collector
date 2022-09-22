@@ -10,28 +10,16 @@ import (
 	"sync"
 
 	"github.com/bmizerany/lpx"
-	"github.com/pganalyze/collector/logs"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
 )
-
-func SetupHttpHandlerDummy() {
-	go func() {
-		http.HandleFunc("/", dummyHandler)
-		http.ListenAndServe(":"+os.Getenv("PORT"), nil)
-	}()
-}
-
-func dummyHandler(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "https://app.pganalyze.com/", http.StatusFound)
-}
 
 func SetupHttpHandlerLogs(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.CollectionOpts, logger *util.Logger, servers []*state.Server, parsedLogStream chan state.ParsedLogStreamItem) {
 	herokuLogStream := make(chan HerokuLogStreamItem, state.LogStreamBufferLen)
 	setupLogTransformer(ctx, wg, servers, herokuLogStream, parsedLogStream, globalCollectionOpts, logger)
 
 	go func() {
-		http.HandleFunc("/", dummyHandler)
+		http.HandleFunc("/", util.HttpRedirectToApp)
 		http.HandleFunc("/logs/", func(w http.ResponseWriter, r *http.Request) {
 			lp := lpx.NewReader(bufio.NewReader(r.Body))
 			for lp.Next() {
@@ -48,8 +36,4 @@ func SetupHttpHandlerLogs(ctx context.Context, wg *sync.WaitGroup, globalCollect
 		})
 		http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 	}()
-
-	for _, server := range servers {
-		logs.EmitTestLogMsg(server, globalCollectionOpts, logger)
-	}
 }
