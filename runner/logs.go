@@ -56,7 +56,7 @@ func SetupLogCollection(ctx context.Context, wg *sync.WaitGroup, servers []*stat
 	if hasAnyHeroku {
 		heroku.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
 		for _, server := range servers {
-			EmitTestLogMsg(server, globalCollectionOpts, logger)
+			EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
 		}
 	}
 	if hasAnyGoogleCloudSQL {
@@ -100,7 +100,7 @@ func setupLogDownloadForAllServers(ctx context.Context, wg *sync.WaitGroup, glob
 					}
 
 					innerWg.Add(1)
-					go downloadLogsForServerWithLocksAndCallbacks(&innerWg, server, globalCollectionOpts, logger)
+					go downloadLogsForServerWithLocksAndCallbacks(ctx, &innerWg, server, globalCollectionOpts, logger)
 				}
 
 				innerWg.Wait()
@@ -109,7 +109,7 @@ func setupLogDownloadForAllServers(ctx context.Context, wg *sync.WaitGroup, glob
 	}()
 }
 
-func downloadLogsForServerWithLocksAndCallbacks(wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) {
+func downloadLogsForServerWithLocksAndCallbacks(ctx context.Context, wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) {
 	defer wg.Done()
 	prefixedLogger := logger.WithPrefixAndRememberErrors(server.Config.SectionName)
 
@@ -124,7 +124,7 @@ func downloadLogsForServerWithLocksAndCallbacks(wg *sync.WaitGroup, server *stat
 	server.CollectionStatusMutex.Unlock()
 
 	server.LogStateMutex.Lock()
-	newLogState, success, err := downloadLogsForServer(server, globalCollectionOpts, prefixedLogger)
+	newLogState, success, err := downloadLogsForServer(ctx, server, globalCollectionOpts, prefixedLogger)
 	if err != nil {
 		server.LogStateMutex.Unlock()
 		printLogDownloadError(server, err, prefixedLogger)
@@ -140,22 +140,22 @@ func downloadLogsForServerWithLocksAndCallbacks(wg *sync.WaitGroup, server *stat
 	}
 }
 
-func downloadLogsForServer(server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (state.PersistedLogState, bool, error) {
+func downloadLogsForServer(ctx context.Context, server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (state.PersistedLogState, bool, error) {
 	grant, err := getLogsGrant(server, globalCollectionOpts, logger)
 	if err != nil || !grant.Valid {
 		return server.LogPrevState, false, err
 	}
 
 	transientLogState := state.TransientLogState{CollectedAt: time.Now()}
-	defer transientLogState.Cleanup()
+	defer transientLogState.Cleanup(logger)
 
 	var newLogState state.PersistedLogState
-	newLogState, transientLogState.LogFiles, transientLogState.QuerySamples, err = system.DownloadLogFiles(server, globalCollectionOpts, logger)
+	newLogState, transientLogState.LogFiles, transientLogState.QuerySamples, err = system.DownloadLogFiles(ctx, server, globalCollectionOpts, logger)
 	if err != nil {
 		return newLogState, false, errors.Wrap(err, "could not collect logs")
 	}
 
-	err = postprocessAndSendLogs(server, globalCollectionOpts, logger, transientLogState, grant)
+	err = postprocessAndSendLogs(ctx, server, globalCollectionOpts, logger, transientLogState, grant)
 	if err != nil {
 		return newLogState, false, err
 	}
@@ -203,7 +203,7 @@ func setupLogStreamer(ctx context.Context, wg *sync.WaitGroup, globalCollectionO
 						continue
 					}
 					prefixedLogger := logger.WithPrefix(server.Config.SectionName)
-					logLinesByServer[identifier] = processLogStream(server, logLinesByServer[identifier], t, globalCollectionOpts, prefixedLogger, logTestSucceeded, logTestFunc)
+					logLinesByServer[identifier] = processLogStream(ctx, server, logLinesByServer[identifier], t, globalCollectionOpts, prefixedLogger, logTestSucceeded, logTestFunc)
 				}
 			case in, ok := <-parsedLogStream:
 				if !ok {
@@ -220,7 +220,7 @@ func setupLogStreamer(ctx context.Context, wg *sync.WaitGroup, globalCollectionO
 	return parsedLogStream
 }
 
-func processLogStream(server *state.Server, logLines []state.LogLine, now time.Time, globalCollectionOpts state.CollectionOpts, logger *util.Logger, logTestSucceeded chan<- bool, logTestFunc func(s *state.Server, lf state.LogFile, lt chan<- bool)) []state.LogLine {
+func processLogStream(ctx context.Context, server *state.Server, logLines []state.LogLine, now time.Time, globalCollectionOpts state.CollectionOpts, logger *util.Logger, logTestSucceeded chan<- bool, logTestFunc func(s *state.Server, lf state.LogFile, lt chan<- bool)) []state.LogLine {
 	server.CollectionStatusMutex.Lock()
 	if server.CollectionStatus.LogSnapshotDisabled {
 		server.CollectionStatusMutex.Unlock()
@@ -228,12 +228,12 @@ func processLogStream(server *state.Server, logLines []state.LogLine, now time.T
 	}
 	server.CollectionStatusMutex.Unlock()
 
-	transientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(logLines, now, server)
+	transientLogState, logFile, tooFreshLogLines, err := stream.AnalyzeStreamInGroups(logLines, now, server, logger)
 	if err != nil {
 		logger.PrintError("%s", err)
 		return tooFreshLogLines
 	}
-	defer transientLogState.Cleanup()
+	defer transientLogState.Cleanup(logger)
 
 	transientLogState.LogFiles = []state.LogFile{logFile}
 
@@ -249,17 +249,21 @@ func processLogStream(server *state.Server, logLines []state.LogLine, now time.T
 
 	grant, err := getLogsGrant(server, globalCollectionOpts, logger)
 	if err != nil {
-		logger.PrintError("Log sending error: %s", err)
-		return logLines // Retry
+		// Note we intentionally discard log lines here (and in the other
+		// error case below), because the HTTP client already retries to work
+		// around temporary failues, and otherwise we would keep processing
+		// more and more lines in error scenarios
+		logger.PrintError("Log sending error (discarding lines): %s", err)
+		return tooFreshLogLines
 	}
 	if !grant.Valid {
 		return tooFreshLogLines // Don't retry (e.g. because this feature is not available)
 	}
 
-	err = postprocessAndSendLogs(server, globalCollectionOpts, logger, transientLogState, grant)
+	err = postprocessAndSendLogs(ctx, server, globalCollectionOpts, logger, transientLogState, grant)
 	if err != nil {
-		logger.PrintError("Log sending error: %s", err)
-		return logLines // Retry
+		logger.PrintError("Log sending error (discarding lines): %s", err)
+		return tooFreshLogLines
 	}
 
 	return tooFreshLogLines
@@ -283,9 +287,9 @@ func getLogsGrant(server *state.Server, globalCollectionOpts state.CollectionOpt
 	return logGrant, nil
 }
 
-func postprocessAndSendLogs(server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger, transientLogState state.TransientLogState, grant state.GrantLogs) (err error) {
+func postprocessAndSendLogs(ctx context.Context, server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger, transientLogState state.TransientLogState, grant state.GrantLogs) (err error) {
 	if server.Config.EnableLogExplain && len(transientLogState.QuerySamples) != 0 {
-		transientLogState.QuerySamples = postgres.RunExplain(server, transientLogState.QuerySamples, globalCollectionOpts, logger)
+		transientLogState.QuerySamples = postgres.RunExplain(ctx, server, transientLogState.QuerySamples, globalCollectionOpts, logger)
 	}
 
 	if server.Config.FilterQuerySample == "all" {
@@ -314,6 +318,11 @@ func postprocessAndSendLogs(server *state.Server, globalCollectionOpts state.Col
 		// Do nothing if filter_query_sample = none (we just take the query samples as they are generated)
 	}
 
+	// Export query samples as traces, if OpenTelemetry endpoint is configured
+	if server.Config.OTelTracingProvider != nil && len(transientLogState.QuerySamples) != 0 {
+		querysample.ExportQuerySamplesAsTraceSpans(ctx, server, logger, grant, transientLogState.QuerySamples)
+	}
+
 	for idx := range transientLogState.LogFiles {
 		// The actual filtering (aka masking of secrets) is done later in
 		// EncryptAndUploadLogfiles, based on this setting
@@ -329,7 +338,7 @@ func postprocessAndSendLogs(server *state.Server, globalCollectionOpts state.Col
 		return nil
 	}
 
-	err = output.UploadAndSendLogs(server, grant, globalCollectionOpts, logger, transientLogState)
+	err = output.UploadAndSendLogs(ctx, server, grant, globalCollectionOpts, logger, transientLogState)
 	if err != nil {
 		return errors.Wrap(err, "failed to upload/send logs")
 	}
@@ -338,7 +347,7 @@ func postprocessAndSendLogs(server *state.Server, globalCollectionOpts state.Col
 }
 
 // TestLogsForAllServers - Test log download/tailing
-func TestLogsForAllServers(servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (hasFailedServers bool, hasSuccessfulLocalServers bool) {
+func TestLogsForAllServers(ctx context.Context, servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (hasFailedServers bool, hasSuccessfulLocalServers bool) {
 	if !globalCollectionOpts.TestRun {
 		return
 	}
@@ -355,7 +364,7 @@ func TestLogsForAllServers(servers []*state.Server, globalCollectionOpts state.C
 			continue
 		}
 
-		logLinePrefix, err := postgres.GetPostgresSetting("log_line_prefix", server, globalCollectionOpts, prefixedLogger)
+		logLinePrefix, err := postgres.GetPostgresSetting(ctx, "log_line_prefix", server, globalCollectionOpts, prefixedLogger)
 		if err != nil {
 			prefixedLogger.PrintError("ERROR - Could not check log_line_prefix for server: %s", err)
 			hasFailedServers = true
@@ -416,7 +425,7 @@ func testLocalLogTail(ctx context.Context, wg *sync.WaitGroup, server *state.Ser
 		return false
 	}
 
-	EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:
@@ -432,7 +441,7 @@ func testLocalLogTail(ctx context.Context, wg *sync.WaitGroup, server *state.Ser
 
 func testLogDownload(ctx context.Context, wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger) bool {
 	prefixedLogger.PrintInfo("Testing log download...")
-	_, _, err := downloadLogsForServer(server, globalCollectionOpts, prefixedLogger)
+	_, _, err := downloadLogsForServer(ctx, server, globalCollectionOpts, prefixedLogger)
 	if err != nil {
 		printLogDownloadError(server, err, prefixedLogger)
 		return false
@@ -452,12 +461,12 @@ func testAzureLogStream(ctx context.Context, wg *sync.WaitGroup, server *state.S
 	if err != nil {
 		logger.PrintError("ERROR - Could not get logs through Azure Event Hub: %s", err)
 		if strings.HasPrefix(err.Error(), "failed to configure Azure AD JWT provider: failed") {
-			logger.PrintInfo("HINT - This may occur when you have multiple user-assigned managed identities set for your virtual machine. Try removing any unrelated managed identities, or explicitly set the azure_ad_client_id setting to the managed identity's Client ID.")
+			logger.PrintInfo("HINT - This error occurs when there are no Azure AD credentials configured. Please review the pganalyze documentation: https://pganalyze.com/docs/log-insights/setup/azure-database/troubleshooting#error-failed-to-configure-azure-ad-jwt-provider")
 		}
 		return false
 	}
 
-	EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:
@@ -484,7 +493,7 @@ func testGoogleCloudsqlLogStream(ctx context.Context, wg *sync.WaitGroup, server
 		return false
 	}
 
-	EmitTestLogMsg(server, globalCollectionOpts, logger)
+	EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
 
 	select {
 	case <-logTestSucceeded:

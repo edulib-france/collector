@@ -1,11 +1,14 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type Config struct {
@@ -13,11 +16,12 @@ type Config struct {
 }
 
 // ServerIdentifier -
-//   Unique identity of each configured server, for deduplication inside the collector.
 //
-//   Note we intentionally don't include the Fallback variables in the identifier, since that is mostly intended
-//   to help transition systems when their "identity" is altered due to collector changes - in the collector we rely
-//   on the non-Fallback values only.
+//	Unique identity of each configured server, for deduplication inside the collector.
+//
+//	Note we intentionally don't include the Fallback variables in the identifier, since that is mostly intended
+//	to help transition systems when their "identity" is altered due to collector changes - in the collector we rely
+//	on the non-Fallback values only.
 type ServerIdentifier struct {
 	APIKey      string
 	APIBaseURL  string
@@ -27,9 +31,10 @@ type ServerIdentifier struct {
 }
 
 // ServerConfig -
-//   Contains the information how to connect to a Postgres instance,
-//   with optional AWS credentials to get metrics
-//   from AWS CloudWatch as well as RDS logfiles
+//
+//	Contains the information how to connect to a Postgres instance,
+//	with optional AWS credentials to get metrics
+//	from AWS CloudWatch as well as RDS logfiles
 type ServerConfig struct {
 	APIKey     string `ini:"api_key"`
 	APIBaseURL string `ini:"api_base_url"`
@@ -55,6 +60,10 @@ type ServerConfig struct {
 	DbSslCertContents     string `ini:"db_sslcert_contents"`
 	DbSslKey              string `ini:"db_sslkey"`
 	DbSslKeyContents      string `ini:"db_sslkey_contents"`
+	DbUseIamAuth          bool   `ini:"db_use_iam_auth"`
+
+	// Postgres data directory, as used for system stats (autodetected if unset)
+	DbDataDirectory string `ini:"db_data_directory"`
 
 	// We have to do some tricks to support sslmode=prefer, namely we have to
 	// first try an SSL connection (= require), and if that fails change the
@@ -114,6 +123,9 @@ type ServerConfig struct {
 	SystemIDFallback    string `ini:"api_system_id_fallback"`
 	SystemTypeFallback  string `ini:"api_system_type_fallback"`
 	SystemScopeFallback string `ini:"api_system_scope_fallback"`
+
+	AlwaysCollectSystemData bool `ini:"always_collect_system_data"`
+	DisableCitusSchemaStats bool `ini:"disable_citus_schema_stats"`
 
 	// Configures the location where logfiles are - this can either be a directory,
 	// or a file - needs to readable by the regular pganalyze user
@@ -176,6 +188,12 @@ type ServerConfig struct {
 	FilterQuerySample string `ini:"filter_query_sample"` // none/normalize/all (defaults to "none")
 	FilterQueryText   string `ini:"filter_query_text"`   // none/unparsable (defaults to "unparsable")
 
+	// Configuration for OpenTelemetry trace exports
+	//
+	// See https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/protocol/exporter.md
+	OtelExporterOtlpEndpoint string `ini:"otel_exporter_otlp_endpoint"`
+	OtelExporterOtlpHeaders  string `ini:"otel_exporter_otlp_headers"`
+
 	// HTTP proxy overrides
 	HTTPProxy  string `ini:"http_proxy"`
 	HTTPSProxy string `ini:"https_proxy"`
@@ -184,6 +202,10 @@ type ServerConfig struct {
 	// HTTP clients to be used for API connections
 	HTTPClient          *http.Client
 	HTTPClientWithRetry *http.Client
+
+	// OpenTelemetry tracing provider, if enabled
+	OTelTracingProvider             *sdktrace.TracerProvider
+	OTelTracingProviderShutdownFunc func(context.Context) error
 }
 
 // SupportsLogDownload - Determines whether the specified config can download logs
@@ -192,14 +214,14 @@ func (config ServerConfig) SupportsLogDownload() bool {
 }
 
 // GetPqOpenString - Gets the database configuration as a string that can be passed to lib/pq for connecting
-func (config ServerConfig) GetPqOpenString(dbNameOverride string) string {
+func (config ServerConfig) GetPqOpenString(dbNameOverride string, passwordOverride string) (string, error) {
 	var dbUsername, dbPassword, dbName, dbHost, dbSslMode, dbSslRootCert, dbSslCert, dbSslKey string
 	var dbPort int
 
 	if config.DbURL != "" {
 		u, err := url.Parse(config.DbURL)
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("Failed to parse database URL: %w", err)
 		}
 
 		if u.User != nil {
@@ -238,7 +260,9 @@ func (config ServerConfig) GetPqOpenString(dbNameOverride string) string {
 	if config.DbUsername != "" {
 		dbUsername = config.DbUsername
 	}
-	if config.DbPassword != "" {
+	if passwordOverride != "" {
+		dbPassword = passwordOverride
+	} else if config.DbPassword != "" {
 		dbPassword = config.DbPassword
 	}
 	if dbNameOverride != "" {
@@ -286,11 +310,10 @@ func (config ServerConfig) GetPqOpenString(dbNameOverride string) string {
 	}
 
 	// Handle SSL certificates shipped with the collector
-	if dbSslRootCert == "rds-ca-2015-root" {
-		dbSslRootCert = "/usr/share/pganalyze-collector/sslrootcert/rds-ca-2015-root.pem"
-	}
-	if dbSslRootCert == "rds-ca-2019-root" {
-		dbSslRootCert = "/usr/share/pganalyze-collector/sslrootcert/rds-ca-2019-root.pem"
+	//
+	// Note: "rds-ca-2019-root" is a legacy cert expiring in 2024 that is part of the global CA set
+	if dbSslRootCert == "rds-ca-2019-root" || dbSslRootCert == "rds-ca-global" {
+		dbSslRootCert = "/usr/share/pganalyze-collector/sslrootcert/rds-ca-global.pem"
 	}
 
 	// Generate the actual string
@@ -323,7 +346,7 @@ func (config ServerConfig) GetPqOpenString(dbNameOverride string) string {
 	}
 	dbinfo = append(dbinfo, "connect_timeout=10")
 
-	return strings.Join(dbinfo, " ")
+	return strings.Join(dbinfo, " "), nil
 }
 
 // GetDbHost - Gets the database hostname from the given configuration

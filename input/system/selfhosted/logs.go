@@ -41,15 +41,15 @@ SELECT setting
 	FROM pg_settings
  WHERE name = '%s'`
 
-func getPostgresSetting(settingName string, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger) (string, error) {
+func getPostgresSetting(ctx context.Context, settingName string, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger) (string, error) {
 	var value string
 
-	db, err := postgres.EstablishConnection(server, prefixedLogger, globalCollectionOpts, "")
+	db, err := postgres.EstablishConnection(ctx, server, prefixedLogger, globalCollectionOpts, "")
 	if err != nil {
 		return "", fmt.Errorf("Could not connect to database to retrieve \"%s\": %s", settingName, err)
 	}
 
-	err = db.QueryRow(postgres.QueryMarkerSQL + fmt.Sprintf(settingValueSQL, settingName)).Scan(&value)
+	err = db.QueryRowContext(ctx, postgres.QueryMarkerSQL+fmt.Sprintf(settingValueSQL, settingName)).Scan(&value)
 	db.Close()
 	if err != nil {
 		return "", fmt.Errorf("Could not read \"%s\" setting: %s", settingName, err)
@@ -60,7 +60,7 @@ func getPostgresSetting(settingName string, server *state.Server, globalCollecti
 
 // DiscoverLogLocation - Tries to find the log location for a currently running Postgres
 // process and outputs the presumed location using the logger
-func DiscoverLogLocation(servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) {
+func DiscoverLogLocation(ctx context.Context, servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) {
 	for _, server := range servers {
 		prefixedLogger := logger.WithPrefix(server.Config.SectionName)
 
@@ -68,7 +68,7 @@ func DiscoverLogLocation(servers []*state.Server, globalCollectionOpts state.Col
 			prefixedLogger.PrintWarning("WARNING - Database hostname is not localhost - Log Insights requires the collector to run on the database server directly for self-hosted systems")
 		}
 
-		logDestination, err := getPostgresSetting("log_destination", server, globalCollectionOpts, prefixedLogger)
+		logDestination, err := getPostgresSetting(ctx, "log_destination", server, globalCollectionOpts, prefixedLogger)
 		if err != nil {
 			prefixedLogger.PrintError("ERROR - %s", err)
 			continue
@@ -82,7 +82,7 @@ func DiscoverLogLocation(servers []*state.Server, globalCollectionOpts state.Col
 			continue
 		}
 
-		loggingCollector, err := getPostgresSetting("logging_collector", server, globalCollectionOpts, prefixedLogger)
+		loggingCollector, err := getPostgresSetting(ctx, "logging_collector", server, globalCollectionOpts, prefixedLogger)
 		if err != nil {
 			prefixedLogger.PrintError("ERROR - %s", err)
 			continue
@@ -102,7 +102,7 @@ func DiscoverLogLocation(servers []*state.Server, globalCollectionOpts state.Col
 		}
 
 		if loggingCollector == "on" {
-			logDirectory, err := getPostgresSetting("log_directory", server, globalCollectionOpts, prefixedLogger)
+			logDirectory, err := getPostgresSetting(ctx, "log_directory", server, globalCollectionOpts, prefixedLogger)
 			if err != nil {
 				prefixedLogger.PrintError("ERROR - Could not retrieve log_directory setting from Postgres: %s", err)
 				continue
@@ -340,7 +340,7 @@ func setupLogLocationTail(ctx context.Context, logLocation string, out chan<- Se
 func setupDockerTail(ctx context.Context, containerName string, out chan<- SelfHostedLogStreamItem, prefixedLogger *util.Logger) error {
 	var err error
 
-	cmd := exec.Command("docker", "logs", containerName, "-f", "--tail", "0")
+	cmd := exec.Command("docker", "logs", "-f", "--tail", "0", containerName)
 	stderr, _ := cmd.StderrPipe()
 
 	scanner := bufio.NewScanner(stderr)
@@ -374,6 +374,7 @@ func setupDockerTail(ctx context.Context, containerName string, out chan<- SelfH
 
 func setupLogTransformer(ctx context.Context, wg *sync.WaitGroup, server *state.Server, globalCollectionOpts state.CollectionOpts, prefixedLogger *util.Logger, parsedLogStream chan state.ParsedLogStreamItem) chan<- SelfHostedLogStreamItem {
 	logStream := make(chan SelfHostedLogStreamItem)
+	tz := server.GetLogTimezone()
 
 	wg.Add(1)
 	go func() {
@@ -398,7 +399,7 @@ func setupLogTransformer(ctx context.Context, wg *sync.WaitGroup, server *state.
 				// Note that we need to restore the original trailing newlines since
 				// AnalyzeStreamInGroups expects them and they are not present in the tail
 				// log stream.
-				logLine, _ := logs.ParseLogLineWithPrefix("", item.Line+"\n")
+				logLine, _ := logs.ParseLogLineWithPrefix("", item.Line+"\n", tz)
 				logLine.CollectedAt = time.Now()
 				logLine.UUID = uuid.NewV4()
 

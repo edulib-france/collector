@@ -1,0 +1,34 @@
+name: Test Packages
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Use older Ubuntu release to ensure availability of CGroupsv1 (which are necessary
+    # currently to support older systemd on some of the test containers)
+    runs-on: ubuntu-20.04-4-cores
+    permissions: {}
+
+    steps:
+
+    - name: Check out code
+      uses: actions/checkout@v3
+      with:
+        submodules: true
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+      with:
+        platforms: arm64
+
+    - name: Build packages
+      run: |
+        GIT_VERSION=HEAD VERSION=0.0.0 make -C packages build
+
+    - name: Test packages
+      run: |
+        GIT_VERSION=HEAD VERSION=0.0.0 make -C packages test

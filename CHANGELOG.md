@@ -1,5 +1,257 @@
 # Changelog
 
+## 0.52.1      2023-10-11
+
+* Postgres 14+: Include toplevel attribute in statement statistics key
+  - This could have caused statistics to be incorrect in Postgres 14+ when
+    the same query was called both from within a function (toplevel=false)
+    and directly (toplevel=true), with pg_stat_statements.track set to "all"
+  - If affected, the issue may have shown by bogus statistics being recorded,
+    for example very high call counts, since the statement stats diff would
+    not have used the correct reference
+
+
+## 0.52.0      2023-10-04
+
+* OpenTelemetry integration: Allow exporting EXPLAIN plans as trace spans
+  - This is an experimental feature that allows configuring the collector
+    to send an OpenTelemetry tracing span for each processed EXPLAIN plan
+    with an associated `traceparent` query tag (e.g. set by sqlcommenter)
+    to the configured OpenTelemetry endpoint
+  - To configure the OTLP protocol endpoint, set the new config setting
+    `otel_exporter_otlp_endpoint` / `OTEL_EXPORTER_OTLP_ENDPOINT`, with a
+    endpoint string like "http://localhost:4318". You can also optionally
+    set the `otel_exporter_otlp_headers` / `OTEL_EXPORTER_OTLP_HEADERS`
+    variable to add authentication details used by hosted tracing providers
+    like Honeycomb and New Relic
+* Relax locking requirements for collecting table stats
+  - This avoids skipped statistics due to page or tuple level locks,
+    which do not conflict with `pg_relation_size` as run by the collector.
+* Activity snapshots: Normalize queries for `filter_query_sample = normalize`
+  - This matches the existing behavior when `filter_query_sample` is set
+    to `all`, which is to run the normalization function on pg_stat_activity
+    query texts, making sure all parameter values are replaced with `$n`
+    parameter references
+* Self-managed servers: Add test run notice when system stats are skipped
+* Docker log tail: Re-order args to also support podman aliased as docker
+
+
+## 0.51.1      2023-08-15
+
+* Fix handling of tables that only have an entry in pg_class, but not pg_stat_user_tables
+  - Due to a bug introduced in the last release (0.51.0), databases with such tables would
+    error out and be ignored due to n_mod_since_analyze and n_ins_since_vacuum being NULL
+
+
+## 0.51.0      2023-08-12
+
+* Autovacuum:
+  - Add support for updated log format in Postgres 15+
+  - Remember unqualified name for "skipping vacuum" log events
+  - Add more cases for "canceling autovacuum task" log context line
+  - Track n_ins_since_vacuum value to determine when insert-based autovacuum was triggered
+* AWS Aurora: Correctly detect Aurora reader instances as replicas
+* Self-managed servers: Use log_timezone setting to determine log timezone if possible
+* Azure: Fix partition selection issue in Azure log processing
+* Helm chart: Improve default security settings
+* Update Go version to 1.21
+* Packages:
+  - Switch to SHA256 signatures to fix RHEL9 install errors
+  - Drop Ubuntu 16.04, 18.04 and Debian 10 (Buster) support, as they are no longer supported
+
+
+## 0.50.1      2023-06-29
+
+* Bugfix: Return correct exit code with the data collection test run
+  - The correct exit code was returned with "--reload --test", but not with "--test"
+* Xmin horizon metrics: Fix incorrect ReplicationSlotCatalog
+  - ReplicationSlot was wrongly sent as ReplicationSlotCatalog
+  - Xmin horizon metrics collection was introduced in 0.49.0
+* Update github.com/satori/go.uuid to 1.2.0
+  - Fixes CVE-2021-3538 which may have led to random UUIDs having less
+    randomness than intended
+  - Effective security impact of this historic issue is expected to be minimal,
+    since random UUIDs are only used for snapshot identifiers associated to a
+    particular pganalyze server ID
+* Log Insights: Add autovacuum index statistics information introduced in Postgres 14
+  - Previously, if autovacuum logs included such information, the collector
+    failed to match the log line and the events would not be classified
+    correctly in Log Insights
+
+
+## 0.50.0      2023-06-05
+
+* Track TOAST table name, reltuples and relpages
+* Reload collector config after successful test run
+  - If you have previously run "--reload --test" you can now simply run "--test"
+  - To restore the old behaviour, pass the "--no-reload" flag together with "--test"
+* RPM packages: Ensure collector gets started after reboot
+  - Due to a packaging oversight, the pganalyze-collector service was not correctly
+    enabled in systemd, which caused the collector to not start after a system reboot
+  - If you are upgrading, the package upgrade script will automatically fix this for you
+* Collector install script: Add Amazon Linux 2023, refresh other versions
+* Azure Database for PostgreSQL / Azure Cosmos DB for PostgreSQL
+  - Add support for Azure Kubernetes Service (AKS) Workload Identity
+    - To utilize this integration, follow the regular Azure instructions for workload
+      identity - the relevant environment variables will be automatically recognized
+* Amazon RDS:
+  - auto_explain and slow query log: Look for "[Your log message was truncated]" marker
+    in the middle of multi-line log messages, not just at the end
+    - This can occur due to limitations of the AWS API - this way the log line is
+      correctly marked as truncated, instead of as a parsing error
+* Heroku Postgres:
+  - Rewrite syslog parsing code and inline it, to avoid "lpx" library license ambiguity
+
+
+## 0.49.2      2023-03-30
+
+* Bugfix: Ensure all relation information will be sent out even with a lock
+  - This fixes a bug where we were not sending out relation information of
+    relations encountered locks. Processing a snapshot missing such information
+    was failing
+* Allow pg_stat_statements_reset() to fail with a soft error
+  - This was a hard error previously, which failed the snapshot and the snapshot
+    state did not get persisted, indirectly led to a memory leak
+* Add integrity checks before uploading snapshots
+  - Validate some structural assumptions that cannot be enforced by protobuf
+    before sending a snapshot
+* Bugfix: Increase timeout to prevent data loss when monitoring many servers
+  - This mitigates an issue introduced in 0.49.0
+
+## 0.49.1      2023-03-10
+
+* Relation queries: Correctly handle later queries encountering a lock
+  - This fixes edge cases where relation metadata (e.g. which indexes exist)
+    can appear and disappear from one snapshot to the next, due to locks
+    held for parts of the snapshot collection
+* Relation statistics: Avoid bogus data due to diffs against locked objects
+  - This fixes a bug where table or index statistics can be skipped due to
+    locks held on the relation, and that causing a bad data point to be
+    collected on a subsequent snapshot, since the prior snapshot would be
+    missing an entry for that relation. Fixed by consistently skipping
+    statistics for that table/index in such situations.
+* Amazon RDS / Aurora: Support new long-lived CA authorities
+  - Introduces the new "rds-ca-global" option for db_sslrootcert, which is the
+    recommended configuration for RDS and Aurora going forward, which encompasses
+    both "rds-ca-2019-root" and all newer RDS CAs such as "rds-ca-rsa2048-g1".
+  - For compatibility reasons we still support naming the "rds-ca-2019-root" CA
+    explicitly, but its now just an alias for the global set.
+* Citus: Add option to turn off collection of Citus schema statistics
+  - For certain Citus deployments, running the relation or index size functions
+    can fail or time out due to a very high number of distributed tables.
+  - Adds the new option "disable_citus_schema_stats" / "DISABLE_CITUS_SCHEMA_STATS"
+    to turn off the collection of these statistics. When using this option its
+    recommended to instead monitor the workers directly for table and index sizes.
+* Add troubleshooting HINT when creating pg_stat_statements extension fails
+  - This commonly fails due to creating pg_stat_statements on the wrong database,
+    see https://pganalyze.com/docs/install/troubleshooting/pg_stat_statements
+
+
+## 0.49.0      2023-02-27
+
+* Update pg_query_go to v4 / Postgres 15 parser
+  - Besides supporting newer syntax like the MERGE statement, this parser
+    update also drops support for "?" replacement characters found in
+    pg_stat_statements output before Postgres 10
+* Postgres 10 is now the minimum required version for running the collector
+  - We have dropped support for 9.6 and earlier due to the parser update,
+    and due to Postgres 9.6 now being End-of-Life (EOL) for over 1 year
+* Enforce maximum time for each snapshot collection using deadlines
+  - Sometimes individual database servers can take longer than the allocated
+    interval (e.g. 10 minutes for a full snapshot), which previously lead to
+    missing data for other servers monitored by the same collector process
+  - The new deadline-based logic ensures that collector functions return with
+    a "context deadline exceeded" error when the allocated interval is exceed,
+    causing a clear error for that server, and allowing other servers to
+    continue reporting their data as planned
+  - As a side effect of this change, Ctrl+C (SIGINT) now works to stop a
+    collector test right away, instead of waiting for the snapshot to complete
+* Log Insights
+  - Only consider first 1000 characters for log_line_prefix to speed up parsing
+  - Clearly report errors with closing/removing temporary files
+  - Improve --analyze-logfile mode for debugging log parsing
+  - Amazon RDS/Aurora: Improve handling of excessively large log file portions
+  - Azure DB for Postgres: Fix log line parsing for DETAIL lines
+* Collect xmin horizon metrics
+* Bugfixes
+  - Relation info: Correctly filter out foreign tables for constraints query
+  - Return zero as FullFrozenXID for replicas
+  - Update Go modules flagged by dependency scanners (issues are not actually applicable)
+
+
+## 0.48.0      2023-01-26
+
+* Update to Go 1.19
+* Bugfix: Ensure relfrozenxid = 0 is tracked as full frozenxid = 0 (instead of
+  adding epoch prefix)
+* Amazon RDS and Amazon Aurora: Support IAM token authentication
+  - This adds a new configuration setting, `db_use_iam_auth` / `DB_USE_IAM_AUTH`.
+    If enabled, the collector fetches a short-lived token for logging into the
+    database instance from the AWS API, instead of using a hardcoded password
+    in the collector configuration file
+  - In order to use this setting, IAM authentication needs to be enabled on the
+    database instance / cluster, and the pganalyze IAM policy needs to be
+    extended to cover the "rds-db:connect" privilege for the pganalyze user:
+    https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.IAMPolicy.html
+* Amazon RDS: Avoid DescribeDBInstances calls for log downloads for RDS instances
+  - This should reduce issues with rate limiting on this API call in some cases
+* Amazon Aurora: Cache failures in DescribeDBClusters calls for up to 10 minutes
+  - This reduces repeated calls to the AWS API when the cluster identifier is
+    incorrect
+* Log parsing: Add support for timezones specified by number, such as "-03"
+
+
+## 0.47.0      2023-01-12
+
+* Fix RDS log processing for large log file sections
+  - This fixes an issue with RDS log file chunks larger than 10MB that caused
+    the collector to calculate log text source offsets incorrectly and could
+    lead to mangled log text in the pganalyze UI and incorrect log filtering
+* Warn if some log lines will be ignored
+  - Some verbose logging settings can lead to log lines being ignored by the
+    collector for performance reasons: warn about this on startup
+* Improve Aiven Service ID and Project ID detection from hostname
+* Fix error handling when fetching stats
+  - The missing checks could previously lead to incomplete snapshots, possibly
+    resulting in tables or indexes temporarily disappearing in pganalyze
+* Fix error handling regarding reading SSL-related config values on startup
+* Ignore non-Postgres URIs in environment on Heroku ([@Preovaleo](https://github.com/Preovaleo))
+* Send additional Postgres table stats
+  - Send relpages, reltuples, relallvisible
+* Send additional Postgres transaction metadata
+  - server level (new stats): current TXID and next MXID
+  - database level: age of datfrozenxid and datminmxid, also xact_commit and
+    xact_rollback
+  - table level: the age of relfrozenxid and relminmxid
+* Send Citus distributed index sizes
+* Add `always_collect_system_data` config option
+  - Also configurable with the `PGA_ALWAYS_COLLECT_SYSTEM_DATA` environment
+    variable
+  - This is useful for package-based setups which monitor the local server by a
+    non-local IP
+* Update pg_query_go version to 2.2.0
+* Install script: Detect aarch64 for Ubuntu/Debian package install
+
+
+## 0.46.1      2022-10-21
+
+* Fix Postgres 15 compatibility due to version check bug
+  - This fixes an issue with Postgres 15 only that caused the collector to reject
+    the newer pg_stat_statements version (1.10) by accident
+* Add packages for Ubuntu 22.04, RHEL9-based distributions and Fedora 36
+
+
+## 0.46.0      2022-10-21
+
+* Relation stats: Skip statistics collection on child tables when parent is locked
+* Add new wait events from Postgres 13 and 14
+* Log streaming: Discard logs after consistent failures to upload
+* Collect blocking PIDs for lock monitoring
+  - Collect blocking PIDs for the backends in waiting for locks state
+  - Disable this option by passing the "--no-postgres-locks" option to the collector binary
+* Add "--benchmark" flag for running collector in benchmark mode (does not send data to pganalyze service)
+
+
 ## 0.45.2      2022-08-31
 
 * Amazon RDS/Aurora

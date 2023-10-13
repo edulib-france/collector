@@ -21,6 +21,7 @@ type SchemaStats struct {
 type PersistedState struct {
 	CollectedAt time.Time
 
+	DatabaseStats  PostgresDatabaseStatsMap
 	StatementStats PostgresStatementStatsMap
 	SchemaStats    map[Oid]*SchemaStats
 
@@ -59,6 +60,7 @@ type TransientState struct {
 	// in order to enable the next snapshot to be able to diff against something
 	ResetStatementStats PostgresStatementStatsMap
 
+	ServerStats   PostgresServerStats
 	Replication   PostgresReplication
 	Settings      []PostgresSetting
 	BackendCounts []PostgresBackendCount
@@ -162,6 +164,8 @@ type DiffState struct {
 	SystemDiskStats    DiffedDiskStatsMap
 
 	CollectorStats DiffedCollectorStats
+
+	DatabaseStats DiffedPostgresDatabaseStatsMap
 }
 
 // StateOnDiskFormatVersion - Increment this when an old state preserved to disk should be ignored
@@ -203,10 +207,13 @@ type CollectionOpts struct {
 	StateFilename    string
 	WriteStateUpdate bool
 	ForceEmptyGrant  bool
+
+	OutputAsJson bool
 }
 
 type GrantConfig struct {
 	ServerID  string `json:"server_id"`
+	ServerURL string `json:"server_url"`
 	SentryDsn string `json:"sentry_dsn"`
 
 	Features GrantFeatures `json:"features"`
@@ -267,12 +274,28 @@ type Server struct {
 	CollectionStatus      CollectionStatus
 	CollectionStatusMutex *sync.Mutex
 
+	// The time zone that logs are parsed in, synced from the setting log_timezone
+	// The StateMutex should be held while updating this
+	LogTimezone      *time.Location
+	LogTimezoneMutex *sync.Mutex
+
 	// Boolean flags for which log lines should be ignored for processing
 	//
 	// Internally this uses atomics (not a mutex) due to noticable performance
 	// differences (see https://groups.google.com/g/golang-nuts/c/eIqkhXh9PLg),
 	// as we access this in high frequency log-related code paths.
 	LogIgnoreFlags uint32
+}
+
+func MakeServer(config config.ServerConfig) *Server {
+	return &Server{
+		Config:                config,
+		StateMutex:            &sync.Mutex{},
+		LogStateMutex:         &sync.Mutex{},
+		ActivityStateMutex:    &sync.Mutex{},
+		CollectionStatusMutex: &sync.Mutex{},
+		LogTimezoneMutex:      &sync.Mutex{},
+	}
 }
 
 const (
@@ -289,6 +312,24 @@ func (s *Server) SetLogIgnoreFlags(ignoreStatement bool, ignoreDuration bool) {
 		newFlags |= LOG_IGNORE_DURATION
 	}
 	atomic.StoreUint32(&s.LogIgnoreFlags, newFlags)
+}
+
+func (s *Server) SetLogTimezone(settings []PostgresSetting) {
+	tz := getTimeZoneFromSettings(settings)
+
+	s.LogTimezoneMutex.Lock()
+	defer s.LogTimezoneMutex.Unlock()
+	s.LogTimezone = tz
+}
+
+func (s *Server) GetLogTimezone() *time.Location {
+	s.LogTimezoneMutex.Lock()
+	defer s.LogTimezoneMutex.Unlock()
+	if s.LogTimezone == nil {
+		return nil
+	}
+	tz := *s.LogTimezone
+	return &tz
 }
 
 // IgnoreLogLine - helper function that lets callers determine whether a log

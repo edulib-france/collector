@@ -605,21 +605,6 @@ var tests = []testpair{
 		}},
 		nil,
 	},
-	{ // Pre 9.5 syntax (without distance/estimate)
-		[]state.LogLine{{
-			Content: "checkpoint complete: wrote 15047 buffers (1.4%); 0 transaction log file(s) added, 0 removed, 30 recycled; write=68.980 s, sync=1.542 s, total=70.548 s; sync files=925, longest=0.216 s, average=0.001 s",
-		}},
-		[]state.LogLine{{
-			Classification: pganalyze_collector.LogLineInformation_CHECKPOINT_COMPLETE,
-			Details: map[string]interface{}{
-				"bufs_written": 15047, "segs_added": 0, "segs_removed": 0, "segs_recycled": 30,
-				"sync_rels":        925,
-				"bufs_written_pct": 1.4, "write_secs": 68.98, "sync_secs": 1.542, "total_secs": 70.548,
-				"longest_secs": 0.216, "average_secs": 0.001},
-			ReviewedForSecrets: true,
-		}},
-		nil,
-	},
 	{
 		[]state.LogLine{{
 			Content:  "checkpoints are occurring too frequently (18 seconds apart)",
@@ -1147,6 +1132,30 @@ var tests = []testpair{
 			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
 			UUID:     uuid.UUID{1},
 		}, {
+			Content:  "automatic vacuum of table \"dbname.schemaname.tablename\"",
+			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
+		}},
+		[]state.LogLine{{
+			LogLevel:           pganalyze_collector.LogLineInformation_ERROR,
+			Classification:     pganalyze_collector.LogLineInformation_AUTOVACUUM_CANCEL,
+			UUID:               uuid.UUID{1},
+			Database:           "dbname",
+			SchemaName:         "schemaname",
+			RelationName:       "tablename",
+			ReviewedForSecrets: true,
+		}, {
+			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content:  "canceling autovacuum task",
+			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
+			UUID:     uuid.UUID{1},
+		}, {
 			Content:  "automatic analyze of table \"dbname.schemaname.tablename\"",
 			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
 		}},
@@ -1157,6 +1166,98 @@ var tests = []testpair{
 			Database:           "dbname",
 			SchemaName:         "schemaname",
 			RelationName:       "tablename",
+			ReviewedForSecrets: true,
+		}, {
+			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content:  "canceling autovacuum task",
+			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
+			UUID:     uuid.UUID{1},
+		}, {
+			Content:  "while scanning block 123 of relation \"public.mytable\"",
+			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
+		}},
+		[]state.LogLine{{
+			LogLevel:           pganalyze_collector.LogLineInformation_ERROR,
+			Classification:     pganalyze_collector.LogLineInformation_AUTOVACUUM_CANCEL,
+			UUID:               uuid.UUID{1},
+			SchemaName:         "public",
+			RelationName:       "mytable",
+			ReviewedForSecrets: true,
+		}, {
+			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content:  "canceling autovacuum task",
+			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
+			UUID:     uuid.UUID{1},
+		}, {
+			Content:  "while scanning block 123 of relation \"public.mytable\"",
+			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
+		}},
+		[]state.LogLine{{
+			LogLevel:           pganalyze_collector.LogLineInformation_ERROR,
+			Classification:     pganalyze_collector.LogLineInformation_AUTOVACUUM_CANCEL,
+			UUID:               uuid.UUID{1},
+			SchemaName:         "public",
+			RelationName:       "mytable",
+			ReviewedForSecrets: true,
+		}, {
+			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content:  "canceling autovacuum task",
+			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
+			UUID:     uuid.UUID{1},
+		}, {
+			Content:  "while cleaning up index \"myindex\" of relation \"public.mytable\"",
+			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
+		}},
+		[]state.LogLine{{
+			LogLevel:           pganalyze_collector.LogLineInformation_ERROR,
+			Classification:     pganalyze_collector.LogLineInformation_AUTOVACUUM_CANCEL,
+			UUID:               uuid.UUID{1},
+			SchemaName:         "public",
+			RelationName:       "mytable",
+			ReviewedForSecrets: true,
+		}, {
+			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
+			ParentUUID:         uuid.UUID{1},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content:  "canceling autovacuum task",
+			LogLevel: pganalyze_collector.LogLineInformation_ERROR,
+			UUID:     uuid.UUID{1},
+		}, {
+			Content:  "while truncating relation \"public.mytable\" to 0 blocks",
+			LogLevel: pganalyze_collector.LogLineInformation_CONTEXT,
+		}},
+		[]state.LogLine{{
+			LogLevel:           pganalyze_collector.LogLineInformation_ERROR,
+			Classification:     pganalyze_collector.LogLineInformation_AUTOVACUUM_CANCEL,
+			UUID:               uuid.UUID{1},
+			SchemaName:         "public",
+			RelationName:       "mytable",
 			ReviewedForSecrets: true,
 		}, {
 			LogLevel:           pganalyze_collector.LogLineInformation_CONTEXT,
@@ -1312,118 +1413,6 @@ var tests = []testpair{
 	},
 	{
 		[]state.LogLine{{
-			Content: "automatic vacuum of table \"postgres.public.pgbench_branches\": index scans: 1" +
-				"\npages: 0 removed, 12 remain" +
-				"\ntuples: 423 removed, 107 remain, 3 are dead but not yet removable" +
-				"\nbuffer usage: 52 hits, 1 misses, 1 dirtied" +
-				"\navg read rate: 7.455 MB/s, avg write rate: 7.455 MB/s" +
-				"\nsystem usage: CPU 0.00s/0.00u sec elapsed 0.00 sec",
-			LogLevel: pganalyze_collector.LogLineInformation_LOG,
-		}},
-		[]state.LogLine{{
-			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
-			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
-			Database:       "postgres",
-			SchemaName:     "public",
-			RelationName:   "pgbench_branches",
-			Details: map[string]interface{}{
-				"aggressive":        false,
-				"num_index_scans":   1,
-				"pages_removed":     0,
-				"rel_pages":         12,
-				"tuples_deleted":    423,
-				"new_rel_tuples":    107,
-				"new_dead_tuples":   3,
-				"vacuum_page_hit":   52,
-				"vacuum_page_miss":  1,
-				"vacuum_page_dirty": 1,
-				"read_rate_mb":      7.455,
-				"write_rate_mb":     7.455,
-				"rusage_kernel":     0,
-				"rusage_user":       0,
-				"elapsed_secs":      0,
-			},
-			ReviewedForSecrets: true,
-		}},
-		nil,
-	},
-	{
-		[]state.LogLine{{
-			Content: "automatic vacuum of table \"my_db.public.my_dimension\": index scans: 1" +
-				"\n  pages: 0 removed, 29457 remain" +
-				"\n  tuples: 3454 removed, 429481 remain, 0 are dead but not yet removable" +
-				"\n  buffer usage: 64215 hits, 8056 misses, 22588 dirtied" +
-				"\n  avg read rate: 1.018 MB/s, avg write rate: 2.855 MB/s" +
-				"\n  system usage: CPU 0.10s/0.88u sec elapsed 61.80 sec",
-			LogLevel: pganalyze_collector.LogLineInformation_LOG,
-		}},
-		[]state.LogLine{{
-			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
-			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
-			Database:       "my_db",
-			SchemaName:     "public",
-			RelationName:   "my_dimension",
-			Details: map[string]interface{}{
-				"aggressive":        false,
-				"num_index_scans":   1,
-				"pages_removed":     0,
-				"rel_pages":         29457,
-				"tuples_deleted":    3454,
-				"new_rel_tuples":    429481,
-				"new_dead_tuples":   0,
-				"vacuum_page_hit":   64215,
-				"vacuum_page_miss":  8056,
-				"vacuum_page_dirty": 22588,
-				"read_rate_mb":      1.018,
-				"write_rate_mb":     2.855,
-				"rusage_kernel":     0.10,
-				"rusage_user":       0.88,
-				"elapsed_secs":      61.80,
-			},
-			ReviewedForSecrets: true,
-		}},
-		nil,
-	},
-	{
-		[]state.LogLine{{
-			Content: "automatic vacuum of table \"mydb.public.mytable\": index scans: 1" +
-				" pages: 0 removed, 597092 remain, 0 skipped due to pins" +
-				"	tuples: 466347 removed, 17314747 remain, 0 are dead but not yet removable" +
-				"	buffer usage: 1854343 hits, 1447635 misses, 272945 dirtied" +
-				"	avg read rate: 5.215 MB/s, avg write rate: 0.983 MB/s" +
-				"	system usage: CPU 2.86s/16.36u sec elapsed 2168.76 sec",
-			LogLevel: pganalyze_collector.LogLineInformation_LOG,
-		}},
-		[]state.LogLine{{
-			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
-			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
-			Database:       "mydb",
-			SchemaName:     "public",
-			RelationName:   "mytable",
-			Details: map[string]interface{}{
-				"aggressive":        false,
-				"num_index_scans":   1,
-				"pages_removed":     0,
-				"rel_pages":         597092,
-				"pinskipped_pages":  0,
-				"tuples_deleted":    466347,
-				"new_rel_tuples":    17314747,
-				"new_dead_tuples":   0,
-				"vacuum_page_hit":   1854343,
-				"vacuum_page_miss":  1447635,
-				"vacuum_page_dirty": 272945,
-				"read_rate_mb":      5.215,
-				"write_rate_mb":     0.983,
-				"rusage_kernel":     2.86,
-				"rusage_user":       16.36,
-				"elapsed_secs":      2168.76,
-			},
-			ReviewedForSecrets: true,
-		}},
-		nil,
-	},
-	{
-		[]state.LogLine{{
 			Content: "automatic vacuum of table \"demo_pgbench.public.pgbench_tellers\": index scans: 0" +
 				" pages: 0 removed, 839 remain, 0 skipped due to pins, 705 skipped frozen" +
 				"	tuples: 1849 removed, 2556 remain, 5 are dead but not yet removable, oldest xmin: 448424944" +
@@ -1570,6 +1559,75 @@ var tests = []testpair{
 	},
 	{
 		[]state.LogLine{{
+			Content: "automatic aggressive vacuum to prevent wraparound of table \"mydb.myschema.mytable\": index scans: 1\n" +
+				"	pages: 8141555 removed, 4783594 remain, 0 skipped due to pins, 10478504 skipped frozen\n" +
+				"	tuples: 2153407 removed, 44326634 remain, 252 are dead but not yet removable, oldest xmin: 1887899920\n" +
+				"	index scan needed: 808328 pages from table (6.25% of total) had 2317145 dead item identifiers removed\n" +
+				"	index \"mytable_index1\": pages: 235675 in total, 5967 newly deleted, 174124 currently deleted, 168157 reusable\n" +
+				"	index \"mytable_index2\": pages: 179 in total, 0 newly deleted, 0 currently deleted, 0 reusable\n" +
+				"	I/O timings: read: 377482.257 ms, write: 8483.639 ms\n" +
+				"	avg read rate: 104.788 MB/s, avg write rate: 19.082 MB/s\n" +
+				"	buffer usage: 2692149 hits, 11619539 misses, 2115983 dirtied\n" +
+				"	WAL usage: 4628822 records, 1983515 full page images, 4131405282 bytes\n" +
+				"	system usage: CPU: user: 189.32 s, system: 84.28 s, elapsed: 866.30 s",
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "mydb",
+			SchemaName:     "myschema",
+			RelationName:   "mytable",
+			Details: map[string]interface{}{
+				"aggressive":               true,
+				"anti_wraparound":          true,
+				"num_index_scans":          1,
+				"pages_removed":            8141555,
+				"rel_pages":                4783594,
+				"pinskipped_pages":         0,
+				"frozenskipped_pages":      10478504,
+				"tuples_deleted":           2153407,
+				"new_rel_tuples":           44326634,
+				"new_dead_tuples":          252,
+				"oldest_xmin":              1887899920,
+				"lpdead_index_scan":        "needed",
+				"lpdead_item_pages":        808328,
+				"lpdead_item_page_percent": 6.25,
+				"lpdead_items":             2317145,
+				"blk_read_time":            377482.257,
+				"blk_write_time":           8483.639,
+				"read_rate_mb":             104.788,
+				"write_rate_mb":            19.082,
+				"vacuum_page_hit":          2692149,
+				"vacuum_page_miss":         11619539,
+				"vacuum_page_dirty":        2115983,
+				"wal_records":              4628822,
+				"wal_fpi":                  1983515,
+				"wal_bytes":                4131405282,
+				"rusage_user":              189.32,
+				"rusage_kernel":            84.28,
+				"elapsed_secs":             866.3,
+				"index_vacuums": map[string]interface{}{
+					"mytable_index1": map[string]interface{}{
+						"num_pages":           235675,
+						"pages_deleted":       174124,
+						"pages_free":          168157,
+						"pages_newly_deleted": 5967,
+					},
+					"mytable_index2": map[string]interface{}{
+						"num_pages":           179,
+						"pages_deleted":       0,
+						"pages_free":          0,
+						"pages_newly_deleted": 0,
+					},
+				},
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
 			Content: "automatic vacuum of table \"alloydbadmin.public.heartbeat\": index scans: 0, elapsed time: 0 s, index vacuum time: 0 ms," +
 				" pages: 0 removed, 1 remain, 0 skipped due to pins, 0 skipped frozen 0 skipped using mintxid," +
 				" tuples: 60 removed, 1 remain, 0 are dead but not yet removable, oldest xmin: 1782," +
@@ -1663,6 +1721,100 @@ var tests = []testpair{
 	},
 	{
 		[]state.LogLine{{
+			Content: `automatic aggressive vacuum to prevent wraparound of table "mydb.myschema.mytable": index scans: 1
+	pages: 0 removed, 300815 remain, 40572 scanned (13.49% of total)
+	tuples: 2867 removed, 16861077 remain, 0 are dead but not yet removable
+	tuples missed: 5 dead from 1 pages not removed due to cleanup lock contention
+	removable cutoff: 3555970282, which was 0 XIDs old when operation ended
+	new relfrozenxid: 3506326394, which is 195284419 XIDs ahead of previous value
+	new relminmxid: 83, which is 5 MXIDs ahead of previous value
+	index scan needed: 11169 pages from table (3.71% of total) had 160440 dead item identifiers removed
+	index "index1": pages: 46608 in total, 0 newly deleted, 0 currently deleted, 0 reusable
+	index "index2": pages: 9365 in total, 2 newly deleted, 2 currently deleted, 0 reusable
+	index "index3": pages: 38252 in total, 129 newly deleted, 14414 currently deleted, 14285 reusable
+	index "index4": pages: 59530 in total, 0 newly deleted, 21608 currently deleted, 21608 reusable
+	I/O timings: read: 1661.751 ms, write: 283.343 ms
+	avg read rate: 76.468 MB/s, avg write rate: 28.413 MB/s
+	buffer usage: 79150 hits, 206012 misses, 76546 dirtied
+	WAL usage: 93766 records, 71348 full page images, 169121919 bytes
+	system usage: CPU: user: 4.49 s, system: 1.30 s, elapsed: 21.04 s`,
+			LogLevel: pganalyze_collector.LogLineInformation_LOG,
+		}},
+		[]state.LogLine{{
+			Classification: pganalyze_collector.LogLineInformation_AUTOVACUUM_COMPLETED,
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Database:       "mydb",
+			SchemaName:     "myschema",
+			RelationName:   "mytable",
+			Details: map[string]interface{}{
+				"aggressive":               true,
+				"anti_wraparound":          true,
+				"num_index_scans":          1,
+				"pages_removed":            0,
+				"rel_pages":                300815,
+				"scanned_pages":            40572,
+				"scanned_pages_percent":    13.49,
+				"tuples_deleted":           2867,
+				"new_rel_tuples":           16861077,
+				"new_dead_tuples":          0,
+				"missed_dead_tuples":       5,
+				"missed_dead_pages":        1,
+				"oldest_xmin":              3555970282,
+				"oldest_xmin_age":          0,
+				"new_relfrozenxid":         3506326394,
+				"new_relfrozenxid_diff":    195284419,
+				"new_relminmxid":           83,
+				"new_relminmxid_diff":      5,
+				"lpdead_index_scan":        "needed",
+				"lpdead_item_pages":        11169,
+				"lpdead_item_page_percent": 3.71,
+				"lpdead_items":             160440,
+				"blk_read_time":            1661.751,
+				"blk_write_time":           283.343,
+				"read_rate_mb":             76.468,
+				"write_rate_mb":            28.413,
+				"vacuum_page_hit":          79150,
+				"vacuum_page_miss":         206012,
+				"vacuum_page_dirty":        76546,
+				"wal_records":              93766,
+				"wal_fpi":                  71348,
+				"wal_bytes":                169121919,
+				"rusage_user":              4.49,
+				"rusage_kernel":            1.30,
+				"elapsed_secs":             21.04,
+				"index_vacuums": map[string]interface{}{
+					"index1": map[string]interface{}{
+						"num_pages":           46608,
+						"pages_newly_deleted": 0,
+						"pages_deleted":       0,
+						"pages_free":          0,
+					},
+					"index2": map[string]interface{}{
+						"num_pages":           9365,
+						"pages_newly_deleted": 2,
+						"pages_deleted":       2,
+						"pages_free":          0,
+					},
+					"index3": map[string]interface{}{
+						"num_pages":           38252,
+						"pages_newly_deleted": 129,
+						"pages_deleted":       14414,
+						"pages_free":          14285,
+					},
+					"index4": map[string]interface{}{
+						"num_pages":           59530,
+						"pages_newly_deleted": 0,
+						"pages_deleted":       21608,
+						"pages_free":          21608,
+					},
+				},
+			},
+			ReviewedForSecrets: true,
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
 			Content:  "automatic analyze of table \"postgres.public.pgbench_branches\" system usage: CPU 1.02s/2.08u sec elapsed 108.25 sec",
 			LogLevel: pganalyze_collector.LogLineInformation_LOG,
 		}},
@@ -1738,10 +1890,12 @@ var tests = []testpair{
 			UUID:     uuid.UUID{1},
 		}},
 		[]state.LogLine{{
-			LogLevel:           pganalyze_collector.LogLineInformation_LOG,
-			Classification:     pganalyze_collector.LogLineInformation_SKIPPING_VACUUM_LOCK_NOT_AVAILABLE,
-			UUID:               uuid.UUID{1},
-			RelationName:       "mytable",
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Classification: pganalyze_collector.LogLineInformation_SKIPPING_VACUUM_LOCK_NOT_AVAILABLE,
+			UUID:           uuid.UUID{1},
+			Details: map[string]interface{}{
+				"relation_name": "mytable",
+			},
 			ReviewedForSecrets: true,
 		}},
 		nil,
@@ -1752,10 +1906,12 @@ var tests = []testpair{
 			UUID:     uuid.UUID{1},
 		}},
 		[]state.LogLine{{
-			LogLevel:           pganalyze_collector.LogLineInformation_LOG,
-			Classification:     pganalyze_collector.LogLineInformation_SKIPPING_ANALYZE_LOCK_NOT_AVAILABLE,
-			UUID:               uuid.UUID{1},
-			RelationName:       "pgbench_tellers",
+			LogLevel:       pganalyze_collector.LogLineInformation_LOG,
+			Classification: pganalyze_collector.LogLineInformation_SKIPPING_ANALYZE_LOCK_NOT_AVAILABLE,
+			UUID:           uuid.UUID{1},
+			Details: map[string]interface{}{
+				"relation_name": "pgbench_tellers",
+			},
 			ReviewedForSecrets: true,
 		}},
 		nil,
@@ -3865,6 +4021,24 @@ var tests = []testpair{
 			SecretMarkers: []state.LogSecretMarker{{
 				ByteStart: 30,
 				ByteEnd:   132,
+				Kind:      state.StatementTextLogSecret,
+			}},
+		}},
+		nil,
+	},
+	{
+		[]state.LogLine{{
+			Content: "duration: 2334.085 ms  plan:\n" +
+				"	{\n" +
+				"	  \"Query Text\": \"SELECT abalance FROM pgbench_accounts WHERE aid = \n [Your log message was truncated]\n some other log content",
+		}},
+		[]state.LogLine{{
+			Classification:     pganalyze_collector.LogLineInformation_STATEMENT_AUTO_EXPLAIN,
+			Details:            map[string]interface{}{"query_sample_error": "auto_explain output was truncated and can't be parsed as JSON"},
+			ReviewedForSecrets: true,
+			SecretMarkers: []state.LogSecretMarker{{
+				ByteStart: 30,
+				ByteEnd:   158,
 				Kind:      state.StatementTextLogSecret,
 			}},
 		}},

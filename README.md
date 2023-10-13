@@ -50,6 +50,7 @@ to run as a superuser, you can setup a separate monitoring user like this:
 
 ```sql
 CREATE SCHEMA pganalyze;
+GRANT USAGE ON SCHEMA pganalyze TO pganalyze;
 
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public;
 
@@ -81,23 +82,11 @@ REVOKE ALL ON SCHEMA public FROM pganalyze;
 GRANT USAGE ON SCHEMA pganalyze TO pganalyze;
 ```
 
-If you are using PostgreSQL 9.3 or older, replace `public.pg_stat_statements(showtext)`
-with `public.pg_stat_statements()` in the `pganalyze.get_stat_statements` helper method.
-
 Note that these statements must be run as a superuser (to create the `SECURITY DEFINER` function),
 but from here onwards you can use the `pganalyze` user instead.
 
 The collector will automatically use the helper methods
 if they exist in the `pganalyze` schema - otherwise data will be fetched directly.
-
-If you are on Postgres 9.6 and use activity snapshots:
-
-```sql
-CREATE OR REPLACE FUNCTION pganalyze.get_stat_progress_vacuum() RETURNS SETOF pg_stat_progress_vacuum AS
-$$
-  /* pganalyze-collector */ SELECT * FROM pg_catalog.pg_stat_progress_vacuum;
-$$ LANGUAGE sql VOLATILE SECURITY DEFINER;
-```
 
 If you are using the Buffer Cache report in pganalyze, you will also need to create this additional helper method:
 
@@ -127,24 +116,6 @@ $$
   /* pganalyze-collector */ SELECT last_value, start_value, increment_by, max_value, min_value, cache_size, cycle
     FROM pg_sequences WHERE schemaname = schema_name AND sequencename = sequence_name;
 $$ LANGUAGE sql VOLATILE SECURITY DEFINER;
-
---- For Postgres 9.6 and older, use this:
-
-CREATE OR REPLACE FUNCTION pganalyze.get_sequence_state(schema_name text, sequence_name text) RETURNS TABLE(
-  last_value bigint, start_value bigint, increment_by bigint,
-  max_value bigint, min_value bigint, cache_size bigint, cycle boolean
-) AS
-$$
-BEGIN
-  IF NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON (c.relnamespace = n.oid) WHERE n.nspname = schema_name AND c.relname = sequence_name AND relkind = 'S') THEN
-    RETURN;
-  END IF;
-
-  RETURN QUERY EXECUTE 'SELECT last_value, start_value, increment_by, max_value, min_value, '
-     || 'cache_value AS cache_size, is_cycled AS cycle FROM '
-     || quote_ident(schema_name) || '.' || quote_ident(sequence_name);
-END
-$$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;
 ```
 
 If you enabled the optional reset mode (usually not required), you will also need this helper method:
@@ -337,14 +308,9 @@ The script will also have the following environment variables set:
 * PGA_ERROR_MESSAGE (error message, in the case of the error callback)
 
 
-Authors
--------
-
- * [Lukas Fittl](https://github.com/lfittl)
- * [Michael Renner](https://github.com/terrorobe)
-
-
 License
 -------
 
 pganalyze-collector is licensed under the 3-clause BSD license, see LICENSE file for details.
+
+Copyright (c) 2012-2023, Duboce Labs, Inc. (pganalyze)

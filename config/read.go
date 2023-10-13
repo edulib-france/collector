@@ -9,11 +9,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-ini/ini"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"golang.org/x/net/http/httpproxy"
 
 	"github.com/pganalyze/collector/util"
@@ -22,6 +29,8 @@ import (
 )
 
 const DefaultAPIBaseURL = "https://api.pganalyze.com"
+
+var pgURIRegexp = regexp.MustCompile(`\Apostgres(?:ql)?://.*`)
 
 func parseConfigBool(value string) bool {
 	var val = strings.ToLower(value)
@@ -110,8 +119,14 @@ func getDefaultConfig() *ServerConfig {
 	if dbSslKey := os.Getenv("DB_SSLKEY"); dbSslKey != "" {
 		config.DbSslKey = dbSslKey
 	}
+	if dbUseIamAuth := os.Getenv("DB_USE_IAM_AUTH"); dbUseIamAuth != "" {
+		config.DbUseIamAuth = parseConfigBool(dbUseIamAuth)
+	}
 	if dbSslKeyContents := os.Getenv("DB_SSLKEY_CONTENTS"); dbSslKeyContents != "" {
 		config.DbSslKeyContents = dbSslKeyContents
+	}
+	if dataDirectory := os.Getenv("DB_DATA_DIRECTORY"); dataDirectory != "" {
+		config.DbDataDirectory = dataDirectory
 	}
 	if awsRegion := os.Getenv("AWS_REGION"); awsRegion != "" {
 		config.AwsRegion = awsRegion
@@ -210,6 +225,12 @@ func getDefaultConfig() *ServerConfig {
 	if logSyslogServer := os.Getenv("LOG_SYSLOG_SERVER"); logSyslogServer != "" {
 		config.LogSyslogServer = logSyslogServer
 	}
+	if alwaysCollectSystemData := os.Getenv("PGA_ALWAYS_COLLECT_SYSTEM_DATA"); alwaysCollectSystemData != "" {
+		config.AlwaysCollectSystemData = parseConfigBool(alwaysCollectSystemData)
+	}
+	if disableCitusSchemaStats := os.Getenv("DISABLE_CITUS_SCHEMA_STATS"); disableCitusSchemaStats != "" {
+		config.DisableCitusSchemaStats = parseConfigBool(disableCitusSchemaStats)
+	}
 	if logPgReadFile := os.Getenv("LOG_PG_READ_FILE"); logPgReadFile != "" {
 		config.LogPgReadFile = parseConfigBool(logPgReadFile)
 	}
@@ -241,6 +262,12 @@ func getDefaultConfig() *ServerConfig {
 	}
 	if filterQueryText := os.Getenv("FILTER_QUERY_TEXT"); filterQueryText != "" {
 		config.FilterQueryText = filterQueryText
+	}
+	if otelExporterOtlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otelExporterOtlpEndpoint != "" {
+		config.OtelExporterOtlpEndpoint = otelExporterOtlpEndpoint
+	}
+	if otelExporterOtlpHeaders := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); otelExporterOtlpHeaders != "" {
+		config.OtelExporterOtlpHeaders = otelExporterOtlpHeaders
 	}
 	if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
 		config.HTTPProxy = httpProxy
@@ -336,6 +363,86 @@ func CreateEC2IMDSHTTPClient(conf ServerConfig) *http.Client {
 	}
 }
 
+const otelServiceName = "Postgres (pganalyze)"
+
+func CreateOTelTracingProvider(ctx context.Context, conf ServerConfig) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+	res, err := sdkresource.New(ctx,
+		sdkresource.WithAttributes(
+			semconv.ServiceName(otelServiceName),
+		),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	u, err := url.Parse(conf.OtelExporterOtlpEndpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse endpoint URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+
+	var traceExporter *otlptrace.Exporter
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+
+	var headers map[string]string
+
+	if conf.OtelExporterOtlpHeaders != "" {
+		headers = make(map[string]string)
+		for _, h := range strings.Split(conf.OtelExporterOtlpHeaders, ",") {
+			nameEscaped, valueEscaped, found := strings.Cut(h, "=")
+			if !found {
+				return nil, nil, fmt.Errorf("unsupported header setting: missing '='")
+			}
+			name, err := url.QueryUnescape(nameEscaped)
+			if err != nil {
+				return nil, nil, fmt.Errorf("unsupported header setting, could not unescape header name: %s", err)
+			}
+			value, err := url.QueryUnescape(valueEscaped)
+			if err != nil {
+				return nil, nil, fmt.Errorf("unsupported header setting, could not unescape header value: %s", err)
+			}
+			headers[strings.TrimSpace(name)] = strings.TrimSpace(value)
+		}
+	}
+
+	switch scheme {
+	case "http", "https":
+		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(u.Host)}
+		if scheme == "http" {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+		if headers != nil {
+			opts = append(opts, otlptracehttp.WithHeaders(headers))
+		}
+		traceExporter, err = otlptracehttp.New(ctx, opts...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create HTTP trace exporter: %w", err)
+		}
+	case "grpc":
+		// For now we always require TLS for gRPC connections
+		opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(u.Host)}
+		if headers != nil {
+			opts = append(opts, otlptracegrpc.WithHeaders(headers))
+		}
+		traceExporter, err = otlptracegrpc.New(ctx, opts...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create GRPC trace exporter: %w", err)
+		}
+	default:
+		return nil, nil, fmt.Errorf("unsupported protocol: %s", u.Scheme)
+	}
+
+	bsp := sdktrace.NewBatchSpanProcessor(traceExporter)
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithResource(res),
+		sdktrace.WithSpanProcessor(bsp),
+	)
+
+	return tracerProvider, tracerProvider.Shutdown, nil
+}
+
 func writeValueToTempfile(value string) (string, error) {
 	file, err := ioutil.TempFile("", "")
 	if err != nil {
@@ -395,12 +502,21 @@ func preprocessConfig(config *ServerConfig) (*ServerConfig, error) {
 	} else if strings.HasSuffix(host, ".aivencloud.com") {
 		parts := strings.SplitN(host, ".", 2)
 		if len(parts) == 2 && (parts[1] == "aivencloud.com") { // Safety check for any escaping issues
-			projSvcParts := strings.SplitN(parts[0], "-", 3)
+			// Aiven domains encode the project id and service id in the subdomain:
+			//    <SERVICE_NAME>-<PROJECT_NAME>.aivencloud.com
+			// (see https://docs.aiven.io/docs/platform/reference/service-ip-address#default-service-hostname)
+			//
+			// It's not documented whether the project name can contain dashes, but the
+			// default service names do, so we assume that everything before the last
+			// dash is the service name.
+			subdomain := parts[0]
+			projSvcParts := strings.Split(subdomain, "-")
+			lastEntryIdx := len(projSvcParts) - 1
 			if config.AivenServiceID == "" {
-				config.AivenServiceID = strings.Join(projSvcParts[0:2], "-")
+				config.AivenServiceID = strings.Join(projSvcParts[0:lastEntryIdx], "-")
 			}
 			if config.AivenProjectID == "" {
-				config.AivenProjectID = projSvcParts[2]
+				config.AivenProjectID = projSvcParts[lastEntryIdx]
 			}
 		}
 	}
@@ -437,10 +553,16 @@ func preprocessConfig(config *ServerConfig) (*ServerConfig, error) {
 
 	if config.DbSslCertContents != "" {
 		config.DbSslCert, err = writeValueToTempfile(config.DbSslCertContents)
+		if err != nil {
+			return config, err
+		}
 	}
 
 	if config.DbSslKeyContents != "" {
 		config.DbSslKey, err = writeValueToTempfile(config.DbSslKeyContents)
+		if err != nil {
+			return config, err
+		}
 	}
 
 	if config.AwsEndpointSigningRegionLegacy != "" && config.AwsEndpointSigningRegion == "" {
@@ -532,25 +654,35 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 		if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
 			for _, kv := range os.Environ() {
 				parts := strings.SplitN(kv, "=", 2)
-				if strings.HasSuffix(parts[0], "_URL") {
-					config := getDefaultConfig()
-					config, err = preprocessConfig(config)
-					if err != nil {
-						return conf, err
-					}
-					config.SectionName = parts[0]
-					config.SystemID = strings.Replace(parts[0], "_URL", "", 1)
-					config.SystemType = "heroku"
-					config.DbURL = parts[1]
-					config.Identifier = ServerIdentifier{
-						APIKey:      config.APIKey,
-						APIBaseURL:  config.APIBaseURL,
-						SystemID:    config.SystemID,
-						SystemType:  config.SystemType,
-						SystemScope: config.SystemScope,
-					}
-					conf.Servers = append(conf.Servers, *config)
+				parsedKey := parts[0]
+				parsedValue := parts[1]
+				if !strings.HasSuffix(parsedKey, "_URL") {
+					continue
 				}
+
+				matched := pgURIRegexp.MatchString(parsedValue)
+				if !matched {
+					continue
+				}
+
+				config := getDefaultConfig()
+				config, err = preprocessConfig(config)
+				if err != nil {
+					return conf, err
+				}
+
+				config.SectionName = parsedKey
+				config.SystemID = strings.Replace(parsedKey, "_URL", "", 1)
+				config.SystemType = "heroku"
+				config.DbURL = parsedValue
+				config.Identifier = ServerIdentifier{
+					APIKey:      config.APIKey,
+					APIBaseURL:  config.APIBaseURL,
+					SystemID:    config.SystemID,
+					SystemType:  config.SystemType,
+					SystemScope: config.SystemScope,
+				}
+				conf.Servers = append(conf.Servers, *config)
 			}
 		} else if os.Getenv("PGA_API_KEY") != "" {
 			config := getDefaultConfig()

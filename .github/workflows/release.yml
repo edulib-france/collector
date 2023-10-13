@@ -7,7 +7,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Use older Ubuntu release to avoid building with a too new glibc, which will cause
+    # errors on older distributions, if anyone uses the generated binary directly.
+    runs-on: ubuntu-20.04
     permissions: {}
     # ensure we don't release on create events for branches (only tags)
     if: ${{ startsWith( github.ref, 'refs/tags' ) }}
@@ -15,19 +17,19 @@ jobs:
     steps:
 
     - name: Set up Go 1.x
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v4
       with:
-        go-version: 1.17
+        go-version: 1.21
       id: go
 
     - name: Set up protoc
-      uses: pganalyze/setup-protoc@v1.1.2
+      uses: pganalyze/setup-protoc@ab6203da1c3118e4406048171b09238ad31ad73e
       with:
         version: 3.14.0
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Check out code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
       with:
         submodules: true
 
@@ -43,19 +45,65 @@ jobs:
         name: pganalyze-collector-linux-amd64
         path: pganalyze-collector-linux-amd64
 
+  build_packages:
+    # Use older Ubuntu release to ensure availability of CGroupsv1 (which are necessary
+    # currently to support older systemd on some of the test containers)
+    runs-on: ubuntu-20.04
+    permissions: {}
+    # ensure we don't release on create events for branches (only tags)
+    if: ${{ startsWith( github.ref, 'refs/tags' ) }}
+
+    steps:
+
+    - name: Check out code
+      uses: actions/checkout@v3
+      with:
+        submodules: true
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+
+    - name: Build packages
+      run: |
+        DOCKER_BUILDKIT=1 make -C packages build
+
+    - name: Test packages
+      run: |
+        DOCKER_BUILDKIT=1 make -C packages test
+
+    - name: Upload packages as artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: packages
+        path: |
+          packages/tmp/pganalyze-collector-*.aarch64.rpm
+          packages/tmp/pganalyze-collector-*.x86_64.rpm
+          packages/tmp/pganalyze-collector_*_amd64.deb
+          packages/tmp/pganalyze-collector_*_arm64.deb
+        if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, build_packages]
     runs-on: ubuntu-latest
+    # ensure we don't release on create events for branches (only tags)
+    if: ${{ startsWith( github.ref, 'refs/tags' ) }}
 
     steps:
     - name: Download build
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v3
       with:
         name: pganalyze-collector-linux-amd64
 
-    - name: Get version from tag
+    - name: Download build packages
+      uses: actions/download-artifact@v3
+      with:
+        name: packages
+
+    - name: Get version and git version from tag
       id: get_version
-      run: echo ::set-output name=version::${GITHUB_REF#refs/tags/}
+      run: |
+        echo "git_version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
     - name: Create release
       id: create_release
@@ -63,8 +111,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.get_version.outputs.version }}
-        release_name: ${{ steps.get_version.outputs.version }}
+        tag_name: ${{ steps.get_version.outputs.git_version }}
+        release_name: ${{ steps.get_version.outputs.git_version }}
         draft: false
         prerelease: false
 
@@ -77,4 +125,44 @@ jobs:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./pganalyze-collector-linux-amd64
         asset_name: pganalyze-collector-linux-amd64
+        asset_content_type: application/octet-stream
+
+    - name: Upload release build package (RPM, x86-64)
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./pganalyze-collector-${{ steps.get_version.outputs.version }}-1.x86_64.rpm
+        asset_name: pganalyze-collector-${{ steps.get_version.outputs.version }}-1.x86_64.rpm
+        asset_content_type: application/octet-stream
+
+    - name: Upload release build package (RPM, arm64)
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./pganalyze-collector-${{ steps.get_version.outputs.version }}-1.aarch64.rpm
+        asset_name: pganalyze-collector-${{ steps.get_version.outputs.version }}-1.aarch64.rpm
+        asset_content_type: application/octet-stream
+
+    - name: Upload release build package (DEB, x86-64)
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./pganalyze-collector_${{ steps.get_version.outputs.version }}_amd64.deb
+        asset_name: pganalyze-collector_${{ steps.get_version.outputs.version }}_amd64.deb
+        asset_content_type: application/octet-stream
+
+    - name: Upload release build package (DEB, arm64)
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./pganalyze-collector_${{ steps.get_version.outputs.version }}_arm64.deb
+        asset_name: pganalyze-collector_${{ steps.get_version.outputs.version }}_arm64.deb
         asset_content_type: application/octet-stream

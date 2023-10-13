@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pganalyze/collector/logs/querysample"
+	"github.com/pganalyze/collector/logs/util"
 	"github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/state"
 )
@@ -78,17 +79,22 @@ var autoVacuum = analyzeGroup{
 		prefixes: []string{"automatic vacuum of table", "automatic aggressive vacuum of table", "automatic aggressive vacuum to prevent wraparound of table"},
 		regexp: regexp.MustCompile(`^automatic (aggressive )?vacuum (to prevent wraparound )?of table "(.+?)": index scans: (\d+),?\s*` +
 			`(?:elapsed time: \d+ \w+, index vacuum time: \d+ \w+,)?\s*` + // Google AlloyDB for PostgreSQL
-			`pages: (\d+) removed, (\d+) remain(?:, (\d+) skipped due to pins)?(?:, (\d+) skipped frozen)?,?\s*` +
+			`pages: (\d+) removed, (\d+) remain, (?:(\d+) skipped due to pins, (\d+) skipped frozen|(\d+) scanned \(([\d.]+)% of total\)),?\s*` +
 			`(?:\d+ skipped using mintxid)?,?\s*` + // Google AlloyDB for PostgreSQL
 			`tuples: (\d+) removed, (\d+) remain, (\d+) are dead but not yet removable(?:, oldest xmin: (\d+))?,?\s*` +
+			`(?:tuples missed: (\d+) dead from (\d+) pages not removed due to cleanup lock contention)?,?\s*` + // Postgres 15+
+			`(?:removable cutoff: (\d+), which was (\d+) XIDs old when operation ended)?,?\s*` + // Postgres 15+
+			`(?:new relfrozenxid: (\d+), which is (\d+) XIDs ahead of previous value)?,?\s*` + // Postgres 15+
+			`(?:new relminmxid: (\d+), which is (\d+) MXIDs ahead of previous value)?,?\s*` + // Postgres 15+
 			`(?:index scan (not needed|needed|bypassed|bypassed by failsafe): (\d+) pages from table \(([\d.]+)% of total\) (?:have|had) (\d+) dead item identifiers(?: removed)?)?,?\s*` + // Postgres 14+
+			`((?:index ".+?": pages: \d+ in total, \d+ newly deleted, \d+ currently deleted, \d+ reusable,?\s*)*)?` + // Postgres 14+
 			`(?:I/O timings: read: ([\d.]+) ms, write: ([\d.]+) ms)?,?\s*` + // Postgres 14+
 			`(?:avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s)?,?\s*` + // Postgres 14+
 			`buffer usage: (\d+) hits, (\d+) misses, (\d+) dirtied,?\s*` +
 			`(?:avg read rate: ([\d.]+) MB/s, avg write rate: ([\d.]+) MB/s)?,?\s*` + // Postgres 13 and older
 			`(?:WAL usage: (\d+) records, (\d+) full page images, (\d+) bytes)?,?\s*` + // Postgres 14+
 			`system usage: CPU(?:(?: ([\d.]+)s/([\d.]+)u sec elapsed ([\d.]+) sec)|(?:: user: ([\d.]+) s, system: ([\d.]+) s, elapsed: ([\d.]+) s))`),
-		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	},
 }
 var autoAnalyze = analyzeGroup{
@@ -116,7 +122,7 @@ var checkpointComplete = analyzeGroup{
 			`(\d+) (?:transaction log|WAL) file\(s\) added, (\d+) removed, (\d+) recycled; ` +
 			`write=([\d\.]+) s, sync=([\d\.]+) s, total=([\d\.]+) s; ` +
 			`sync files=(\d+), longest=([\d\.]+) s, average=([\d\.]+) s` +
-			`(; distance=(\d+) kB, estimate=(\d+) kB)?`),
+			`; distance=(\d+) kB, estimate=(\d+) kB`),
 		secrets: []state.LogSecretKind{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	},
 }
@@ -1112,8 +1118,12 @@ var pgaCollectorIdentify = analyzeGroup{
 }
 
 // CONTEXT patterns (errcontext calls in Postgres)
-var contextCancelAutovacuum = match{
-	regexp:  regexp.MustCompile(`automatic analyze of table "(.+?)"`),
+var contextCancelAutovacuum = match{ // do_autovacuum in autovacuum.c
+	regexp:  regexp.MustCompile(`automatic (?:vacuum|analyze) of table "(.+?)"`),
+	secrets: []state.LogSecretKind{0},
+}
+var contextCancelAutovacuumDetail = match{ // vacuum_error_callback in vacuumlazy.c
+	regexp:  regexp.MustCompile(`while (?:scanning|vacuuming|vacuuming index \"[^"]+\"|cleaning up index \"[^"]+\"|truncating) (?:block \d+ )?(?:of )?relation "(.+?)"(?: to \d+ blocks)?`),
 	secrets: []state.LogSecretKind{0},
 }
 var otherContextPatterns = []match{
@@ -1143,6 +1153,7 @@ var otherContextPatterns = []match{
 	},
 }
 
+var autoVacuumIndexRegexp = regexp.MustCompile(`index "(.+?)": pages: (\d+) in total, (\d+) newly deleted, (\d+) currently deleted, (\d+) reusable,?\s*`)
 var parallelWorkerProcessTextRegexp = regexp.MustCompile(`^parallel worker for PID (\d+)`)
 
 func AnalyzeLogLines(logLinesIn []state.LogLine) (logLinesOut []state.LogLine, samples []state.PostgresQuerySample) {
@@ -1314,7 +1325,7 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		}
 
 		logLine, parts = matchLogLine(logLine, checkpointComplete.primary)
-		if len(parts) == 16 {
+		if len(parts) == 15 {
 			if parts[1] == "checkpoint" {
 				logLine.Classification = pganalyze_collector.LogLineInformation_CHECKPOINT_COMPLETE
 			} else if parts[1] == "restartpoint" {
@@ -1332,6 +1343,8 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 			syncRels, _ := strconv.ParseInt(parts[10], 10, 64)
 			longestSecs, _ := strconv.ParseFloat(parts[11], 64)
 			averageSecs, _ := strconv.ParseFloat(parts[12], 64)
+			distanceKb, _ := strconv.ParseInt(parts[13], 10, 64)
+			estimateKb, _ := strconv.ParseInt(parts[14], 10, 64)
 			logLine.Details = map[string]interface{}{
 				"bufs_written": bufsWritten, "segs_added": segsAdded,
 				"segs_removed": segsRemoved, "segs_recycled": segsRecycled,
@@ -1339,17 +1352,10 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 				"bufs_written_pct": bufsWrittenPct, "write_secs": writeSecs,
 				"sync_secs": syncSecs, "total_secs": totalSecs,
 				"longest_secs": longestSecs, "average_secs": averageSecs,
+				"distance_kb": distanceKb,
+				"estimate_kb": estimateKb,
 			}
 
-			// Postgres 9.5 and newer
-			if parts[14] != "" {
-				distanceKb, _ := strconv.ParseInt(parts[14], 10, 64)
-				logLine.Details["distance_kb"] = distanceKb
-			}
-			if parts[15] != "" {
-				estimateKb, _ := strconv.ParseInt(parts[15], 10, 64)
-				logLine.Details["estimate_kb"] = estimateKb
-			}
 			contextLine = matchOtherContextLogLine(contextLine)
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
 		}
@@ -1496,7 +1502,7 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 	if matchesPrefix(logLine, duration.primary.prefixes) {
 		logLine.Classification = duration.classification
 		logLine, parts = matchLogLine(logLine, duration.primary)
-		if strings.HasSuffix(strings.TrimSpace(logLine.Content), "[Your log message was truncated]") {
+		if util.WasTruncated(logLine.Content) {
 			logLine.Details = map[string]interface{}{"truncated": true}
 		} else if len(parts) == 5 {
 			var parameterParts [][]string
@@ -1541,6 +1547,15 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 				if len(subParts) >= 3 {
 					logLine.RelationName = subParts[2]
 				}
+			} else {
+				contextLine, parts = matchLogLine(contextLine, contextCancelAutovacuumDetail)
+				if len(parts) == 2 {
+					subParts := strings.SplitN(parts[1], ".", 2)
+					if len(subParts) == 2 {
+						logLine.SchemaName = subParts[0]
+						logLine.RelationName = subParts[1]
+					}
+				}
 			}
 			return logLine, statementLine, detailLine, contextLine, hintLine, samples
 		}
@@ -1549,7 +1564,9 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		logLine.Classification = skippingVacuum.classification
 		logLine, parts = matchLogLine(logLine, skippingVacuum.primary)
 		if len(parts) == 2 {
-			logLine.RelationName = parts[1]
+			// Unfortunately Postgres doesn't log a schema here, so we need to store this
+			// outside of the usual relation reference (which requires a schema)
+			logLine.Details = map[string]interface{}{"relation_name": parts[1]}
 		}
 		contextLine = matchOtherContextLogLine(contextLine)
 		return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1558,7 +1575,9 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 		logLine.Classification = skippingAnalyze.classification
 		logLine, parts = matchLogLine(logLine, skippingAnalyze.primary)
 		if len(parts) == 2 {
-			logLine.RelationName = parts[1]
+			// Unfortunately Postgres doesn't log a schema here, so we need to store this
+			// outside of the usual relation reference (which requires a schema)
+			logLine.Details = map[string]interface{}{"relation_name": parts[1]}
 		}
 		contextLine = matchOtherContextLogLine(contextLine)
 		return logLine, statementLine, detailLine, contextLine, hintLine, samples
@@ -1599,7 +1618,7 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 	}
 	if matchesPrefix(logLine, autoVacuum.primary.prefixes) {
 		logLine, parts = matchLogLine(logLine, autoVacuum.primary)
-		if len(parts) == 35 {
+		if len(parts) == 46 {
 			var readRatePart, writeRatePart, kernelPart, userPart, elapsedPart string
 
 			aggressiveVacuum := parts[1] == "aggressive "
@@ -1620,38 +1639,42 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 			pagesRemoved, _ := strconv.ParseInt(parts[5], 10, 64)
 			relPages, _ := strconv.ParseInt(parts[6], 10, 64)
 
-			// Parts 7 and 8 (Pinskipped/Frozenskipped pages) are only present on Postgres 9.5/9.6+ and dealt with at the end
+			// Parts 7 to 10 (scanned, pinskipped and frozenskipped pages) are version dependent and dealt with later
 
-			tuplesDeleted, _ := strconv.ParseInt(parts[9], 10, 64)
-			newRelTuples, _ := strconv.ParseInt(parts[10], 10, 64)
-			newDeadTuples, _ := strconv.ParseInt(parts[11], 10, 64)
+			tuplesDeleted, _ := strconv.ParseInt(parts[11], 10, 64)
+			newRelTuples, _ := strconv.ParseInt(parts[12], 10, 64)
 
-			// Parts 12 to 18 (Index scan info, I/O read/write timings) are only present on Postgres 14+ and dealt with at the end
+			// In Postgres 15+ the internal name changed from "new_dead_tuples" to "recently_dead_tuples",
+			// to distinguish it from the added "missed_dead_tuples" - we're keeping the old name for compatibility
+			newDeadTuples, _ := strconv.ParseInt(parts[13], 10, 64)
 
-			if parts[19] != "" { // Postgres 14+, with I/O information before buffers
-				readRatePart = parts[19]
-				writeRatePart = parts[20]
+			// Parts 14 to 22 (missed dead tuples, OldestXmin, frozenxid and minmxid advancement) are version dependent and dealt with later
+			// Parts 23 to 29 (Index scan info, I/O read/write timings) are only present on Postgres 14+ and dealt with later
+
+			if parts[30] != "" { // Postgres 14+, with I/O information before buffers
+				readRatePart = parts[30]
+				writeRatePart = parts[31]
 			} else { // Postgres 13 and older
-				readRatePart = parts[24]
-				writeRatePart = parts[25]
+				readRatePart = parts[35]
+				writeRatePart = parts[36]
 			}
 			readRateMb, _ := strconv.ParseFloat(readRatePart, 64)
 			writeRateMb, _ := strconv.ParseFloat(writeRatePart, 64)
 
-			vacuumPageHit, _ := strconv.ParseInt(parts[21], 10, 64)
-			vacuumPageMiss, _ := strconv.ParseInt(parts[22], 10, 64)
-			vacuumPageDirty, _ := strconv.ParseInt(parts[23], 10, 64)
+			vacuumPageHit, _ := strconv.ParseInt(parts[32], 10, 64)
+			vacuumPageMiss, _ := strconv.ParseInt(parts[33], 10, 64)
+			vacuumPageDirty, _ := strconv.ParseInt(parts[34], 10, 64)
 
-			// Parts 26 to 28 (WAL Usage) are only present on Postgres 13+ and dealt with at the end
+			// Parts 37 to 39 (WAL Usage) are only present on Postgres 13+ and dealt with later
 
-			if parts[29] != "" {
-				kernelPart = parts[29]
-				userPart = parts[30]
-				elapsedPart = parts[31]
+			if parts[40] != "" {
+				kernelPart = parts[40]
+				userPart = parts[41]
+				elapsedPart = parts[42]
 			} else {
-				userPart = parts[32]
-				kernelPart = parts[33]
-				elapsedPart = parts[34]
+				userPart = parts[43]
+				kernelPart = parts[44]
+				elapsedPart = parts[45]
 			}
 			rusageKernelMode, _ := strconv.ParseFloat(kernelPart, 64)
 			rusageUserMode, _ := strconv.ParseFloat(userPart, 64)
@@ -1669,47 +1692,90 @@ func classifyAndSetDetails(logLine state.LogLine, statementLine state.LogLine, d
 			}
 			// List anti-wraparound status either if the message indicates that it is, or if
 			// our Postgres version is new enough (13+) as determined by the presence of WAL
-			// record information (parts[26])
+			// record information (parts[37])
 			//
 			// Note that Postgres 12 is the odd one out, because it already had anti-wraparound
 			// status displayed, but we have no way to distinguish it from versions that didn't
 			// have it - there, only include the case when the vacuum indeed is a anti-wraparound
 			// vacuum.
-			if parts[2] != "" || parts[26] != "" {
+			if parts[2] != "" || parts[37] != "" {
 				antiWraparound := parts[2] == "to prevent wraparound "
 				logLine.Details["anti_wraparound"] = antiWraparound
 			}
-			if parts[7] != "" {
+			if parts[9] != "" { // Postgres 15+, with scanned pages, but no pinskipped/frozenskipped counter
+				scannedPages, _ := strconv.ParseInt(parts[9], 10, 64)
+				scannedPagesPercent, _ := strconv.ParseFloat(parts[10], 64)
+				logLine.Details["scanned_pages"] = scannedPages
+				logLine.Details["scanned_pages_percent"] = scannedPagesPercent
+			} else { // Postgres 14 and older
 				pinskippedPages, _ := strconv.ParseInt(parts[7], 10, 64)
-				logLine.Details["pinskipped_pages"] = pinskippedPages
-			}
-			if parts[8] != "" {
 				frozenskippedPages, _ := strconv.ParseInt(parts[8], 10, 64)
+				logLine.Details["pinskipped_pages"] = pinskippedPages
 				logLine.Details["frozenskipped_pages"] = frozenskippedPages
 			}
-			if parts[12] != "" {
-				oldestXmin, _ := strconv.ParseInt(parts[12], 10, 64)
+			if parts[14] != "" { // Postgres 10 to 14
+				oldestXmin, _ := strconv.ParseInt(parts[14], 10, 64)
 				logLine.Details["oldest_xmin"] = oldestXmin
+			} else if parts[17] != "" { // Postgres 15+
+				oldestXmin, _ := strconv.ParseInt(parts[17], 10, 64)
+				oldestXminAge, _ := strconv.ParseInt(parts[18], 10, 64)
+				logLine.Details["oldest_xmin"] = oldestXmin
+				logLine.Details["oldest_xmin_age"] = oldestXminAge
 			}
-			if parts[13] != "" {
-				lpdeadItemPages, _ := strconv.ParseInt(parts[14], 10, 64)
-				lpdeadItemPagePercent, _ := strconv.ParseFloat(parts[15], 64)
-				lpdeadItems, _ := strconv.ParseInt(parts[16], 10, 64)
-				logLine.Details["lpdead_index_scan"] = parts[13] // not needed / needed / bypassed / bypassed by failsafe
+			if parts[15] != "" { // Postgres 15+, if dead tuples were skipped due to cleanup lock contention
+				missedDeadTuples, _ := strconv.ParseInt(parts[15], 10, 64)
+				missedDeadPages, _ := strconv.ParseInt(parts[16], 10, 64)
+				logLine.Details["missed_dead_tuples"] = missedDeadTuples
+				logLine.Details["missed_dead_pages"] = missedDeadPages
+			}
+			if parts[19] != "" { // Postgres 15+, if frozenxid was updated
+				newRelfrozenXid, _ := strconv.ParseInt(parts[19], 10, 64)
+				newRelfrozenXidDiff, _ := strconv.ParseInt(parts[20], 10, 64)
+				logLine.Details["new_relfrozenxid"] = newRelfrozenXid
+				logLine.Details["new_relfrozenxid_diff"] = newRelfrozenXidDiff
+			}
+			if parts[21] != "" { // Postgres 15+, if minmxid was updated
+				newRelminMxid, _ := strconv.ParseInt(parts[21], 10, 64)
+				newRelminMxidDiff, _ := strconv.ParseInt(parts[22], 10, 64)
+				logLine.Details["new_relminmxid"] = newRelminMxid
+				logLine.Details["new_relminmxid_diff"] = newRelminMxidDiff
+			}
+			if parts[23] != "" {
+				lpdeadItemPages, _ := strconv.ParseInt(parts[24], 10, 64)
+				lpdeadItemPagePercent, _ := strconv.ParseFloat(parts[25], 64)
+				lpdeadItems, _ := strconv.ParseInt(parts[26], 10, 64)
+				logLine.Details["lpdead_index_scan"] = parts[23] // not needed / needed / bypassed / bypassed by failsafe
 				logLine.Details["lpdead_item_pages"] = lpdeadItemPages
 				logLine.Details["lpdead_item_page_percent"] = lpdeadItemPagePercent
 				logLine.Details["lpdead_items"] = lpdeadItems
 			}
-			if parts[17] != "" {
-				blkReadTime, _ := strconv.ParseFloat(parts[17], 64)
-				blkWriteTime, _ := strconv.ParseFloat(parts[18], 64)
+			if parts[27] != "" {
+				indexParts := autoVacuumIndexRegexp.FindAllStringSubmatch(parts[27], -1)
+				index_vacuums := make(map[string]interface{})
+				for _, p := range indexParts {
+					numPages, _ := strconv.ParseInt(p[2], 10, 64)
+					pagesNewlyDeleted, _ := strconv.ParseInt(p[3], 10, 64)
+					pagesDeleted, _ := strconv.ParseInt(p[4], 10, 64)
+					pagesFree, _ := strconv.ParseInt(p[5], 10, 64)
+					index_vacuums[p[1]] = map[string]interface{}{
+						"num_pages":           numPages,
+						"pages_newly_deleted": pagesNewlyDeleted,
+						"pages_deleted":       pagesDeleted,
+						"pages_free":          pagesFree,
+					}
+				}
+				logLine.Details["index_vacuums"] = index_vacuums
+			}
+			if parts[28] != "" {
+				blkReadTime, _ := strconv.ParseFloat(parts[28], 64)
+				blkWriteTime, _ := strconv.ParseFloat(parts[29], 64)
 				logLine.Details["blk_read_time"] = blkReadTime
 				logLine.Details["blk_write_time"] = blkWriteTime
 			}
-			if parts[26] != "" {
-				walRecords, _ := strconv.ParseInt(parts[26], 10, 64)
-				walFpi, _ := strconv.ParseInt(parts[27], 10, 64)
-				walBytes, _ := strconv.ParseInt(parts[28], 10, 64)
+			if parts[37] != "" {
+				walRecords, _ := strconv.ParseInt(parts[37], 10, 64)
+				walFpi, _ := strconv.ParseInt(parts[38], 10, 64)
+				walBytes, _ := strconv.ParseInt(parts[39], 10, 64)
 				logLine.Details["wal_records"] = walRecords
 				logLine.Details["wal_fpi"] = walFpi
 				logLine.Details["wal_bytes"] = walBytes
@@ -2119,7 +2185,7 @@ func AnalyzeBackendLogLines(logLines []state.LogLine) (logLinesOut []state.LogLi
 			if futureLine.LogLevel == pganalyze_collector.LogLineInformation_STATEMENT || futureLine.LogLevel == pganalyze_collector.LogLineInformation_DETAIL ||
 				futureLine.LogLevel == pganalyze_collector.LogLineInformation_HINT || futureLine.LogLevel == pganalyze_collector.LogLineInformation_CONTEXT ||
 				futureLine.LogLevel == pganalyze_collector.LogLineInformation_QUERY {
-				if futureLine.LogLevel == pganalyze_collector.LogLineInformation_STATEMENT && !strings.HasSuffix(futureLine.Content, "[Your log message was truncated]") {
+				if futureLine.LogLevel == pganalyze_collector.LogLineInformation_STATEMENT && !util.WasTruncated(futureLine.Content) {
 					logLine.Query = futureLine.Content
 					statementLine = futureLine
 					statementLine.ParentUUID = logLine.UUID

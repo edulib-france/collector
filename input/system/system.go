@@ -1,7 +1,7 @@
 package system
 
 import (
-	"os"
+	"context"
 
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/input/postgres"
@@ -12,14 +12,14 @@ import (
 )
 
 // DownloadLogFiles - Downloads all new log files for the remote system and returns them
-func DownloadLogFiles(server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (psl state.PersistedLogState, files []state.LogFile, querySamples []state.PostgresQuerySample, err error) {
+func DownloadLogFiles(ctx context.Context, server *state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) (psl state.PersistedLogState, files []state.LogFile, querySamples []state.PostgresQuerySample, err error) {
 	if server.Config.SystemType == "amazon_rds" {
-		psl, files, querySamples, err = rds.DownloadLogFiles(server, logger)
+		psl, files, querySamples, err = rds.DownloadLogFiles(ctx, server, logger)
 		if err != nil {
 			return
 		}
 	} else if server.Config.LogPgReadFile {
-		psl, files, querySamples, err = postgres.LogPgReadFile(server, globalCollectionOpts, logger)
+		psl, files, querySamples, err = postgres.LogPgReadFile(ctx, server, globalCollectionOpts, logger)
 		if err != nil {
 			return
 		}
@@ -31,7 +31,7 @@ func DownloadLogFiles(server *state.Server, globalCollectionOpts state.Collectio
 }
 
 // GetSystemState - Retrieves a system snapshot for this system and returns it
-func GetSystemState(config config.ServerConfig, logger *util.Logger) (system state.SystemState) {
+func GetSystemState(config config.ServerConfig, logger *util.Logger, globalCollectionOpts state.CollectionOpts) (system state.SystemState) {
 	dbHost := config.GetDbHost()
 	if config.SystemType == "amazon_rds" {
 		system = rds.GetSystemState(config, logger)
@@ -46,8 +46,18 @@ func GetSystemState(config config.ServerConfig, logger *util.Logger) (system sta
 		// runs on the database server itself and can gather local statistics
 		system = selfhosted.GetSystemState(config, logger)
 		system.Info.Type = state.CrunchyBridgeSystem
-	} else if dbHost == "" || dbHost == "localhost" || dbHost == "127.0.0.1" || os.Getenv("PGA_ALWAYS_COLLECT_SYSTEM_DATA") != "" {
+	} else if config.SystemType == "aiven" {
+		system.Info.Type = state.AivenSystem
+	} else if dbHost == "" || dbHost == "localhost" || dbHost == "127.0.0.1" || config.AlwaysCollectSystemData {
 		system = selfhosted.GetSystemState(config, logger)
+	} else {
+		if globalCollectionOpts.TestRun {
+			// Detected as self hosted, but not collecting system state as we
+			// didn't detect the collector is running on the same instance as
+			// the database server.
+			// Leave logs for if this is a test run.
+			logger.PrintInfo("Skipping collection of system state: remote host (%s) was specified for the database address. Consider enabling always_collect_system_data if the database is running on the same system as the collector", dbHost)
+		}
 	}
 
 	system.Info.SystemID = config.SystemID

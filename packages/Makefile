@@ -1,6 +1,6 @@
-export NAME=pganalyze-collector
-export VERSION=0.45.2
-export GIT_VERSION=v0.45.2
+export NAME ?= pganalyze-collector
+export VERSION ?= 0.52.1
+export GIT_VERSION ?= v$(VERSION)
 #export GIT_VERSION=HEAD
 #export GIT_VERSION=618e85ce5ed5365bc7d9d9da866fdeb73bac5a55
 #export VERSION=$(shell git show -s --format=%ct.%h HEAD)
@@ -25,7 +25,12 @@ build: setup
 test: setup build
 	make -C test
 
-repo: build
+# Assume the package build and test were run automatically, and use the artifacts from the GitHub release instead of rebuilding
+repo: setup
+	curl -o tmp/${RPM_PACKAGE_X86_64} -fSL "https://github.com/pganalyze/collector/releases/download/${GIT_VERSION}/${RPM_PACKAGE_X86_64}"
+	curl -o tmp/${RPM_PACKAGE_ARM64} -fSL "https://github.com/pganalyze/collector/releases/download/${GIT_VERSION}/${RPM_PACKAGE_ARM64}"
+	curl -o tmp/${DEB_PACKAGE_X86_64} -fSL "https://github.com/pganalyze/collector/releases/download/${GIT_VERSION}/${DEB_PACKAGE_X86_64}"
+	curl -o tmp/${DEB_PACKAGE_ARM64} -fSL "https://github.com/pganalyze/collector/releases/download/${GIT_VERSION}/${DEB_PACKAGE_ARM64}"
 	make -C repo
 
 clean:

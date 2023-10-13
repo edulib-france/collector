@@ -1,5 +1,11 @@
 ## Contributing Instructions
 
+Pull the project with submodules.
+
+```sh
+git clone --recursive https://github.com/pganalyze/collector
+```
+
 ### Setup
 
 The dependencies are stored in the `vendor` folder, so no installation is needed.
@@ -50,3 +56,27 @@ make integration_test
 ```
 
 Note the integration tests require Docker, and will take a while to run through.
+
+### Release
+
+1. Create a PR to update the version numbers and CHANGELOG.md
+2. Once PR is merged, create a new tag `git tag v0.x.y`, then push it `git push origin v0.x.y`
+3. Once a new tag is pushed, GitHub Action Release will be kicked and create a new release (this will take about 2 hours, due to the package build and test)
+4. Modify the newly created release's description to match to CHANGELOG.md
+5. Release docker images using `make docker_release` (this requires access to the Quay.io push key, as well as "docker buildx" with QEMU emulation support, see below)
+6. Sign and release packages using `make -C packages repo` (this requires access to the Keybase GPG key)
+
+To run step 5 from an Ubuntu 22.04 VM, do the following:
+
+```
+sudo snap install docker
+sudo apt update
+sudo apt install qemu-user-static binfmt-support make
+
+# Get these credentials from Quay.io
+sudo docker login -u="REPLACE_ME" -p="REPLACE_ME" quay.io
+
+git clone https://github.com/pganalyze/collector.git
+cd collector
+sudo make docker_release
+```

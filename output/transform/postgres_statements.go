@@ -3,13 +3,13 @@ package transform
 import (
 	"time"
 
-	"github.com/golang/protobuf/ptypes"
 	snapshot "github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func groupStatements(statements state.PostgresStatementMap, statementTexts state.PostgresStatementTextMap, statsMap state.DiffedPostgresStatementStatsMap) map[statementKey]statementValue {
+func groupStatements(statements state.PostgresStatementMap, statsMap state.DiffedPostgresStatementStatsMap) map[statementKey]statementValue {
 	groupedStatements := make(map[statementKey]statementValue)
 
 	for sKey, stats := range statsMap {
@@ -18,6 +18,8 @@ func groupStatements(statements state.PostgresStatementMap, statementTexts state
 			statement = state.PostgresStatement{QueryTextUnavailable: true, Fingerprint: util.FingerprintText(util.QueryTextUnavailable)}
 		}
 
+		// Note we intentionally don't include sKey.TopLevel here, since we don't (yet)
+		// separate statistics based on that attribute in the pganalyze app
 		key := statementKey{
 			databaseOid: sKey.DatabaseOid,
 			userOid:     sKey.UserOid,
@@ -67,7 +69,7 @@ func transformQueryStatistic(stats state.DiffedPostgresStatementStats, idx int32
 
 func transformPostgresStatements(s snapshot.FullSnapshot, newState state.PersistedState, diffState state.DiffState, transientState state.TransientState, roleOidToIdx OidToIdx, databaseOidToIdx OidToIdx) snapshot.FullSnapshot {
 	// Statement stats from this snapshot
-	groupedStatements := groupStatements(transientState.Statements, transientState.StatementTexts, diffState.StatementStats)
+	groupedStatements := groupStatements(transientState.Statements, diffState.StatementStats)
 	for key, value := range groupedStatements {
 		idx := upsertQueryReferenceAndInformation(&s, transientState.StatementTexts, roleOidToIdx, databaseOidToIdx, key, value)
 
@@ -84,10 +86,10 @@ func transformPostgresStatements(s snapshot.FullSnapshot, newState state.Persist
 		}
 
 		h := snapshot.HistoricQueryStatistics{}
-		h.CollectedAt, _ = ptypes.TimestampProto(timeKey.CollectedAt)
+		h.CollectedAt = timestamppb.New(timeKey.CollectedAt)
 		h.CollectedIntervalSecs = timeKey.CollectedIntervalSecs
 
-		groupedStatements = groupStatements(transientState.Statements, transientState.StatementTexts, diffedStats)
+		groupedStatements = groupStatements(transientState.Statements, diffedStats)
 		for key, value := range groupedStatements {
 			idx := upsertQueryReferenceAndInformation(&s, transientState.StatementTexts, roleOidToIdx, databaseOidToIdx, key, value)
 			statistic := transformQueryStatistic(value.statementStats, idx)

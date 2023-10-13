@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 
@@ -37,14 +38,14 @@ SELECT t.oid,
     AND n.nspname !~ '^pg_toast'
 `
 
-func GetTypes(db *sql.DB, postgresVersion state.PostgresVersion, currentDatabaseOid state.Oid) ([]state.PostgresType, error) {
-	stmt, err := db.Prepare(QueryMarkerSQL + typesSQL)
+func GetTypes(ctx context.Context, db *sql.DB, postgresVersion state.PostgresVersion, currentDatabaseOid state.Oid) ([]state.PostgresType, error) {
+	stmt, err := db.PrepareContext(ctx, QueryMarkerSQL+typesSQL)
 	if err != nil {
 		return nil, err
 	}
 	defer stmt.Close()
 
-	rows, err := stmt.Query()
+	rows, err := stmt.QueryContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +76,10 @@ func GetTypes(db *sql.DB, postgresVersion state.PostgresVersion, currentDatabase
 		}
 
 		types = append(types, t)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return types, nil

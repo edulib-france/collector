@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -193,8 +194,8 @@ SELECT nspname,
 // SELECT index_size, index_size * (1.0 - avg_leaf_density / 100.0) FROM pgstatindex('some_index_pkey'::regclass);
 // http://blog.ioguix.net/postgresql/2014/03/28/Playing-with-indexes-and-better-bloat-estimate.html
 
-func GetRelationBloat(logger *util.Logger, db *sql.DB, columnStatsSourceTable string, ignoreRegexp string) (relBloat []state.PostgresRelationBloat, err error) {
-	rows, err := db.Query(QueryMarkerSQL+fmt.Sprintf(tableBloatSQL, columnStatsSourceTable, columnStatsSourceTable), ignoreRegexp)
+func GetRelationBloat(ctx context.Context, logger *util.Logger, db *sql.DB, columnStatsSourceTable string, ignoreRegexp string) (relBloat []state.PostgresRelationBloat, err error) {
+	rows, err := db.QueryContext(ctx, QueryMarkerSQL+fmt.Sprintf(tableBloatSQL, columnStatsSourceTable, columnStatsSourceTable), ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("TableBloat/Query: %s", err)
 		return nil, err
@@ -215,11 +216,16 @@ func GetRelationBloat(logger *util.Logger, db *sql.DB, columnStatsSourceTable st
 		}
 	}
 
+	if err = rows.Err(); err != nil {
+		err = fmt.Errorf("TableBloat/Rows: %s", err)
+		return nil, err
+	}
+
 	return
 }
 
-func GetIndexBloat(logger *util.Logger, db *sql.DB, columnStatsSourceTable, ignoreRegexp string) (indexBloat []state.PostgresIndexBloat, err error) {
-	rows, err := db.Query(QueryMarkerSQL+fmt.Sprintf(indexBloatSQL, columnStatsSourceTable), ignoreRegexp)
+func GetIndexBloat(ctx context.Context, logger *util.Logger, db *sql.DB, columnStatsSourceTable, ignoreRegexp string) (indexBloat []state.PostgresIndexBloat, err error) {
+	rows, err := db.QueryContext(ctx, QueryMarkerSQL+fmt.Sprintf(indexBloatSQL, columnStatsSourceTable), ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("IndexBloat/Query: %s", err)
 		return nil, err
@@ -240,17 +246,22 @@ func GetIndexBloat(logger *util.Logger, db *sql.DB, columnStatsSourceTable, igno
 		}
 	}
 
+	if err = rows.Err(); err != nil {
+		err = fmt.Errorf("IndexBloat/Rows: %s", err)
+		return nil, err
+	}
+
 	return
 }
 
-func GetBloatStats(logger *util.Logger, db *sql.DB, systemType, ignoreRegexp string) (report state.PostgresBloatStats, err error) {
+func GetBloatStats(ctx context.Context, logger *util.Logger, db *sql.DB, systemType, ignoreRegexp string) (report state.PostgresBloatStats, err error) {
 	var columnStatsSourceTable string
 
-	if StatsHelperExists(db, "get_column_stats") {
+	if StatsHelperExists(ctx, db, "get_column_stats") {
 		logger.PrintVerbose("Found pganalyze.get_column_stats() stats helper")
 		columnStatsSourceTable = "(SELECT * FROM pganalyze.get_column_stats()) pg_stats"
 	} else {
-		if !connectedAsSuperUser(db, systemType) && !connectedAsMonitoringRole(db) {
+		if !connectedAsSuperUser(ctx, db, systemType) && !connectedAsMonitoringRole(ctx, db) {
 			logger.PrintInfo("Warning: You are not connecting as superuser. Please setup" +
 				" the monitoring helper functions (https://github.com/pganalyze/collector#setting-up-a-restricted-monitoring-user)" +
 				" or connect as superuser to run the bloat report.")
@@ -258,17 +269,17 @@ func GetBloatStats(logger *util.Logger, db *sql.DB, systemType, ignoreRegexp str
 		columnStatsSourceTable = "pg_catalog.pg_stats"
 	}
 
-	report.Relations, err = GetRelationBloat(logger, db, columnStatsSourceTable, ignoreRegexp)
+	report.Relations, err = GetRelationBloat(ctx, logger, db, columnStatsSourceTable, ignoreRegexp)
 	if err != nil {
 		return
 	}
 
-	report.Indices, err = GetIndexBloat(logger, db, columnStatsSourceTable, ignoreRegexp)
+	report.Indices, err = GetIndexBloat(ctx, logger, db, columnStatsSourceTable, ignoreRegexp)
 	if err != nil {
 		return
 	}
 
-	report.DatabaseName, err = CurrentDatabaseName(db)
+	report.DatabaseName, err = CurrentDatabaseName(ctx, db)
 	if err != nil {
 		return
 	}

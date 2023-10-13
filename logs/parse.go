@@ -1,7 +1,6 @@
 package logs
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"regexp"
@@ -105,8 +104,6 @@ var RsyslogHostnameRegxp = `(\S+)`
 var RsyslogProcessNameRegexp = `(\w+)`
 var RsyslogRegexp = regexp.MustCompile(`^` + RsyslogTimeRegexp + ` ` + RsyslogHostnameRegxp + ` ` + RsyslogProcessNameRegexp + `\[` + PidRegexp + `\]: ` + SyslogSequenceAndSplitRegexp + ` ` + RsyslogLevelAndContentRegexp)
 
-var HerokuPostgresDebugRegexp = regexp.MustCompile(`^(\w+ \d+ \d+:\d+:\d+ \w+ app\[postgres\] \w+ )?\[(\w+)\] \[\d+-\d+\] (.+)`)
-
 func IsSupportedPrefix(prefix string) bool {
 	for _, supportedPrefix := range SupportedPrefixes {
 		if supportedPrefix == prefix {
@@ -116,14 +113,20 @@ func IsSupportedPrefix(prefix string) bool {
 	return false
 }
 
-func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, ok bool) {
+func ParseLogLineWithPrefix(prefix string, line string, tz *time.Location) (logLine state.LogLine, ok bool) {
 	var timePart, userPart, dbPart, appPart, pidPart, logLineNumberPart, levelPart, contentPart string
 
-	// Assume Postgres time format unless overriden by the prefix (e.g. syslog)
-	timeFormat := "2006-01-02 15:04:05 -0700"
-	timeFormatAlt := "2006-01-02 15:04:05 MST"
-
 	rsyslog := false
+
+	// Only read the first 1000 characters of a log line to parse the log_line_prefix
+	//
+	// This reduces the overhead for very long loglines, because we don't pass in the
+	// whole line to the regexp engine (twice).
+	lineExtra := ""
+	if len(line) > 1000 {
+		lineExtra = line[1000:]
+		line = line[0:1000]
+	}
 
 	if prefix == "" {
 		if LogPrefixAmazonRdsRegexp.MatchString(line) {
@@ -179,8 +182,7 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 		if len(parts) == 0 {
 			return
 		}
-		timeFormat = "2006 Jan  2 15:04:05"
-		timeFormatAlt = ""
+
 		timePart = fmt.Sprintf("%d %s", time.Now().Year(), parts[1])
 		// ignore syslog hostname
 		// ignore syslog process name
@@ -462,41 +464,17 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 			contentPart = parts[14]
 		default:
 			// Some callers use the content of unparsed lines to stitch multi-line logs together
-			logLine.Content = line
+			logLine.Content = line + lineExtra
 			return
 		}
 	}
 
-	var err error
 	if timePart != "" {
-		logLine.OccurredAt, err = time.Parse(timeFormat, timePart)
-		if err != nil {
-			if timeFormatAlt != "" {
-				// Ensure we have the correct format remembered for ParseInLocation call that may happen later
-				timeFormat = timeFormatAlt
-				logLine.OccurredAt, err = time.Parse(timeFormat, timePart)
-			}
-			if err != nil {
-				return
-			}
+		occurredAt := getOccurredAt(timePart, tz, rsyslog)
+		if occurredAt.IsZero() {
+			return
 		}
-		// Handle non-UTC timezones in systems that have log_timezone set to a different
-		// timezone value than their system timezone. This is necessary because Go otherwise
-		// only reads the timezone name but does not set the timezone offset, see
-		// https://pkg.go.dev/time#Parse
-		zone, offset := logLine.OccurredAt.Zone()
-		if offset == 0 && zone != "UTC" && zone != "" {
-			zoneLocation, err := time.LoadLocation(zone)
-			if err != nil {
-				// We don't know which timezone this is (and a timezone name is present), so we can't process this log line
-				return
-			}
-			logLine.OccurredAt, err = time.ParseInLocation(timeFormat, timePart, zoneLocation)
-			if err != nil {
-				// Technically this should not occur (as we should have already failed previously in time.Parse)
-				return
-			}
-		}
+		logLine.OccurredAt = occurredAt
 	}
 
 	if userPart != "[unknown]" {
@@ -515,7 +493,7 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 
 	backendPid, _ := strconv.ParseInt(pidPart, 10, 32)
 	logLine.BackendPid = int32(backendPid)
-	logLine.Content = contentPart
+	logLine.Content = contentPart + lineExtra
 
 	// This is actually a continuation of a previous line
 	if levelPart == "" {
@@ -528,13 +506,80 @@ func ParseLogLineWithPrefix(prefix string, line string) (logLine state.LogLine, 
 	return
 }
 
-func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan time.Time, server *state.Server) ([]state.LogLine, []state.PostgresQuerySample, int64) {
+func getOccurredAt(timePart string, tz *time.Location, rsyslog bool) time.Time {
+	if tz != nil && !rsyslog {
+		lastSpaceIdx := strings.LastIndex(timePart, " ")
+		if lastSpaceIdx == -1 {
+			return time.Time{}
+		}
+		timePartNoTz := timePart[0:lastSpaceIdx]
+		result, err := time.ParseInLocation("2006-01-02 15:04:05", timePartNoTz, tz)
+		if err != nil {
+			return time.Time{}
+		}
+
+		return result
+	}
+
+	// Assume Postgres time format unless overriden by the prefix (e.g. syslog)
+	var timeFormat, timeFormatAlt string
+	if rsyslog {
+		timeFormat = "2006 Jan  2 15:04:05"
+		timeFormatAlt = ""
+	} else {
+		timeFormat = "2006-01-02 15:04:05 -0700"
+		timeFormatAlt = "2006-01-02 15:04:05 MST"
+	}
+
+	ts, err := time.Parse(timeFormat, timePart)
+	if err != nil {
+		if timeFormatAlt != "" {
+			// Ensure we have the correct format remembered for ParseInLocation call that may happen later
+			timeFormat = timeFormatAlt
+			ts, err = time.Parse(timeFormat, timePart)
+		}
+		if err != nil {
+			return time.Time{}
+		}
+	}
+
+	// Handle non-UTC timezones in systems that have log_timezone set to a different
+	// timezone value than their system timezone. This is necessary because Go otherwise
+	// only reads the timezone name but does not set the timezone offset, see
+	// https://pkg.go.dev/time#Parse
+	zone, offset := ts.Zone()
+	if offset == 0 && zone != "UTC" && zone != "" {
+		var zoneLocation *time.Location
+		zoneNum, err := strconv.Atoi(zone)
+		if err == nil {
+			zoneLocation = time.FixedZone(zone, zoneNum*3600)
+		} else {
+			zoneLocation, err = time.LoadLocation(zone)
+			if err != nil {
+				// We don't know which timezone this is (and a timezone name is present), so we can't process this log line
+				return time.Time{}
+			}
+		}
+		ts, err = time.ParseInLocation(timeFormat, timePart, zoneLocation)
+		if err != nil {
+			// Technically this should not occur (as we should have already failed previously in time.Parse)
+			return time.Time{}
+		}
+	}
+	return ts
+}
+
+type LineReader interface {
+	ReadString(delim byte) (string, error)
+}
+
+func ParseAndAnalyzeBuffer(logStream LineReader, linesNewerThan time.Time, server *state.Server) ([]state.LogLine, []state.PostgresQuerySample) {
 	var logLines []state.LogLine
-	currentByteStart := initialByteStart
-	reader := bufio.NewReader(strings.NewReader(buffer))
+	var currentByteStart int64 = 0
+	var tz = server.GetLogTimezone()
 
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := logStream.ReadString('\n')
 		byteStart := currentByteStart
 		currentByteStart += int64(len(line))
 
@@ -547,7 +592,7 @@ func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan
 			break
 		}
 
-		logLine, ok := ParseLogLineWithPrefix("", line)
+		logLine, ok := ParseLogLineWithPrefix("", line, tz)
 		if !ok {
 			// Assume that a parsing error in a follow-on line means that we actually
 			// got additional data for the previous line
@@ -567,59 +612,6 @@ func ParseAndAnalyzeBuffer(buffer string, initialByteStart int64, linesNewerThan
 		// log_statement=all/log_duration=on lines). Note this intentionally
 		// runs after multi-line log lines have been stitched together.
 		if server.IgnoreLogLine(logLine.Content) {
-			continue
-		}
-
-		logLine.ByteStart = byteStart
-		logLine.ByteContentStart = byteStart + int64(len(line)-len(logLine.Content))
-		logLine.ByteEnd = byteStart + int64(len(line))
-
-		// Generate unique ID that can be used to reference this line
-		logLine.UUID = uuid.NewV4()
-
-		logLines = append(logLines, logLine)
-	}
-
-	newLogLines, newSamples := AnalyzeLogLines(logLines)
-	return newLogLines, newSamples, currentByteStart
-}
-
-func DebugParseAndAnalyzeBuffer(buffer string) ([]state.LogLine, []state.PostgresQuerySample) {
-	var logLines []state.LogLine
-	currentByteStart := int64(0)
-	reader := bufio.NewReader(strings.NewReader(buffer))
-
-	for {
-		line, err := reader.ReadString('\n')
-		byteStart := currentByteStart
-		currentByteStart += int64(len(line))
-
-		// This is intentionally after updating currentByteStart, since we consume the
-		// data in the file even if an error is returned
-		if err != nil {
-			if err != io.EOF {
-				fmt.Printf("Log Read ERROR: %s", err)
-			}
-			break
-		}
-
-		contentParts := HerokuPostgresDebugRegexp.FindStringSubmatch(line)
-		var logLine state.LogLine
-		var lineContent string
-		if len(contentParts) == 4 {
-			lineContent = contentParts[3]
-		} else {
-			lineContent = line
-		}
-		var ok bool
-		logLine, ok = ParseLogLineWithPrefix("", lineContent)
-		if !ok {
-			// Assume that a parsing error in a follow-on line means that we actually
-			// got additional data for the previous line
-			if len(logLines) > 0 && logLine.Content != "" {
-				logLines[len(logLines)-1].Content += logLine.Content
-				logLines[len(logLines)-1].ByteEnd += int64(len(logLine.Content))
-			}
 			continue
 		}
 

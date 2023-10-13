@@ -57,17 +57,23 @@ then
   pkg=yum
   distribution=el
   version=7
+elif grep -q '^ID="amzn"$' /etc/os-release && grep -q '^VERSION_ID="2023"$' /etc/os-release;
+then
+  # Amazon Linux 2023, utilizing same glibc version (2.34) as CentOS Streams 9
+  pkg=yum
+  distribution=el
+  version=9
 elif grep -q '^ID="\(rhel\|centos\)"$' /etc/os-release;
 then
   # RHEL and CentOS
   pkg=yum
   distribution=el
   version=$(grep VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"' | cut -d. -f1)
-  if [ "$version" != 7 ] && [ "$version" != 8 ];
+  if [ "$version" != 7 ] && [ "$version" != 8 ] && [ "$version" != 9 ];
   then
-    if confirm "Unsupported RHEL or CentOS version; try RHEL8 package?";
+    if confirm "Unsupported RHEL or CentOS version; try RHEL9 package?";
     then
-      version=8
+      version=9
     else
       fail "unrecognized RHEL or CentOS version: ${version}"
     fi
@@ -79,11 +85,11 @@ then
   distribution=fedora
   version=$(grep VERSION_ID /etc/os-release | cut -d= -f2)
 
-  if [ "$version" != 35 ] && [ "$version" != 34 ];
+  if [ "$version" != 37 ] && [ "$version" != 36 ];
   then
-    if confirm "Unsupported Fedora version; try Fedora 35 package?";
+    if confirm "Unsupported Fedora version; try Fedora 37 package?";
     then
-      version=35
+      version=37
     else
       fail "unrecognized Fedora version: ${version}"
     fi
@@ -94,11 +100,11 @@ then
   pkg=deb
   distribution=ubuntu
   version=$(grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
-  if [ "$version" != focal ] && [ "$version" != bionic ] && [ "$version" != xenial ];
+  if [ "$version" != jammy ] && [ "$version" != focal ];
   then
-    if confirm "Unsupported Ubuntu version; try Ubuntu Focal (20.04) package?";
+    if confirm "Unsupported Ubuntu version; try Ubuntu Jammy (22.04) package?";
     then
-      version=focal
+      version=jammy
     else
       fail "unrecognized Ubuntu version: ${version}"
     fi
@@ -109,18 +115,18 @@ then
   pkg=deb
   distribution=debian
   version=$(grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
-  if [ "$version" != bullseye ] && [ "$version" != buster ] && [ "$version" != stretch ];
+  if [ "$version" != bookworm ] && [ "$version" != bullseye ];
   then
-    if confirm "Unsupported Debian version; try Debian Bullseye (11) package?";
+    if confirm "Unsupported Debian version; try Debian Bookworm (12) package?";
     then
-      version=bullseye
+      version=bookworm
     else
       fail "unrecognized Debian version: ${version}"
     fi
   fi
 else
   >&2 cat /etc/os-release
-  fail "unrecognized distribution: ${distribution}"
+  fail "unrecognized distribution"
 fi
 
 # If we're already running as sudo or root, no need to do anything;
@@ -171,7 +177,7 @@ then
   if [ "$arch" = 'x86_64' ];
   then
     apt_source="deb [arch=amd64] https://packages.pganalyze.com/${distribution}/${version}/ stable main"
-  elif [ "$arch" = 'arm64' ];
+  elif [ "$arch" = 'arm64' ] || [ "$arch" = 'aarch64' ];
   then
     apt_source="deb [arch=arm64] https://packages.pganalyze.com/${distribution}/${version}/ stable main"
   fi

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
@@ -34,8 +35,8 @@ SELECT name, setting
 	FROM pg_catalog.pg_settings
  WHERE name LIKE 'autovacuum%'`
 
-func GetVacuumStats(logger *util.Logger, db *sql.DB, ignoreRegexp string) (report state.PostgresVacuumStats, err error) {
-	configRows, err := db.Query(QueryMarkerSQL+globalVacuumSettingsSQL, ignoreRegexp)
+func GetVacuumStats(ctx context.Context, logger *util.Logger, db *sql.DB, ignoreRegexp string) (report state.PostgresVacuumStats, err error) {
+	configRows, err := db.QueryContext(ctx, QueryMarkerSQL+globalVacuumSettingsSQL, ignoreRegexp)
 	if err != nil {
 		return
 	}
@@ -46,7 +47,10 @@ func GetVacuumStats(logger *util.Logger, db *sql.DB, ignoreRegexp string) (repor
 		var name string
 		var value string
 
-		configRows.Scan(&name, &value)
+		err = configRows.Scan(&name, &value)
+		if err != nil {
+			return
+		}
 
 		switch name {
 		case "autovacuum":
@@ -84,7 +88,11 @@ func GetVacuumStats(logger *util.Logger, db *sql.DB, ignoreRegexp string) (repor
 		}
 	}
 
-	rows, err := db.Query(QueryMarkerSQL + tableVacuumSQL)
+	if err = configRows.Err(); err != nil {
+		return
+	}
+
+	rows, err := db.QueryContext(ctx, QueryMarkerSQL+tableVacuumSQL)
 	if err != nil {
 		return
 	}
@@ -95,11 +103,14 @@ func GetVacuumStats(logger *util.Logger, db *sql.DB, ignoreRegexp string) (repor
 		var entry state.PostgresVacuumStatsEntry
 		var relopts string
 
-		rows.Scan(&entry.SchemaName, &entry.RelationName, &entry.LiveRowCount,
+		err = rows.Scan(&entry.SchemaName, &entry.RelationName, &entry.LiveRowCount,
 			&entry.DeadRowCount, &entry.Relfrozenxid, &entry.Relminmxid,
 			&entry.LastManualVacuumRun, &entry.LastAutoVacuumRun,
 			&entry.LastManualAnalyzeRun, &entry.LastAutoAnalyzeRun,
 			&relopts)
+		if err != nil {
+			return
+		}
 
 		entry.AutovacuumEnabled = report.AutovacuumEnabled
 		entry.AutovacuumVacuumThreshold = report.AutovacuumVacuumThreshold
@@ -150,7 +161,11 @@ func GetVacuumStats(logger *util.Logger, db *sql.DB, ignoreRegexp string) (repor
 		report.Relations = append(report.Relations, entry)
 	}
 
-	report.DatabaseName, err = CurrentDatabaseName(db)
+	if err = rows.Err(); err != nil {
+		return
+	}
+
+	report.DatabaseName, err = CurrentDatabaseName(ctx, db)
 	if err != nil {
 		return
 	}

@@ -1,4 +1,4 @@
-FROM golang:1.17-alpine as base
+FROM golang:1.21-alpine as base
 MAINTAINER team@pganalyze.com
 
 ENV GOPATH /go
@@ -14,11 +14,11 @@ WORKDIR $CODE_DIR
 RUN  make build_dist_alpine OUTFILE=$HOME_DIR/collector 
 
 RUN mkdir -p /usr/share/pganalyze-collector/sslrootcert/
-COPY contrib/sslrootcert/rds-ca-2019-root.pem contrib/sslrootcert/rds-ca-2015-root.pem /usr/share/pganalyze-collector/sslrootcert/
+COPY contrib/sslrootcert/rds-ca-global.pem /usr/share/pganalyze-collector/sslrootcert/
 COPY contrib/docker-entrypoint.sh $HOME_DIR
 RUN chmod +x $HOME_DIR/docker-entrypoint.sh
 
-FROM alpine:3.15 as slim
+FROM alpine:3.18 as slim
 
 RUN apk add --no-cache ca-certificates tzdata
 
@@ -26,7 +26,7 @@ RUN adduser -D pganalyze pganalyze \
   && mkdir /state  \
   && chown pganalyze:pganalyze /state 
 
-COPY --from=base --chown=pganalyze:pganalyze /home/pganalyze/docker-entrypoint.sh /home/pganalyze/collector /home/pganalyze
+COPY --from=base --chown=pganalyze:pganalyze /home/pganalyze/docker-entrypoint.sh /home/pganalyze/collector /home/pganalyze/
 COPY --from=base /usr/share/pganalyze-collector/sslrootcert/ /usr/share/pganalyze-collector/sslrootcert/
 
 VOLUME ["/state"]

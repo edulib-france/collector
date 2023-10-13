@@ -1,20 +1,30 @@
 package output
 
 import (
+	"context"
+
 	"github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/output/transform"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
-	pg_query "github.com/pganalyze/pg_query_go/v2"
 )
 
-func SubmitCompactActivitySnapshot(server *state.Server, grant state.Grant, collectionOpts state.CollectionOpts, logger *util.Logger, activityState state.TransientActivityState) error {
+func SubmitCompactActivitySnapshot(ctx context.Context, server *state.Server, grant state.Grant, collectionOpts state.CollectionOpts, logger *util.Logger, activityState state.TransientActivityState) error {
 	as, r := transform.ActivityStateToCompactActivitySnapshot(server, activityState)
 
-	if server.Config.FilterQuerySample == "all" {
+	if server.Config.FilterQuerySample != "" && server.Config.FilterQuerySample != "none" {
 		for idx, backend := range as.Backends {
-			if backend.QueryText != "" {
-				as.Backends[idx].QueryText, _ = pg_query.Normalize(backend.QueryText)
+			// Normalize can be slow, protect against edge cases here by checking for cancellations
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				if backend.QueryText != "" {
+					// We pass "unparseable" here as the implied value of the filter_query_text setting, since for historic
+					// reasons this conditional here is based on filter_query_sample. The intent is that if the query is
+					// unparseable, it turns into "<truncated query>" or "<unparseable query>", not the original text.
+					as.Backends[idx].QueryText = util.NormalizeQuery(backend.QueryText, "unparseable", activityState.TrackActivityQuerySize)
+				}
 			}
 		}
 	}
@@ -23,5 +33,5 @@ func SubmitCompactActivitySnapshot(server *state.Server, grant state.Grant, coll
 		BaseRefs: &r,
 		Data:     &pganalyze_collector.CompactSnapshot_ActivitySnapshot{ActivitySnapshot: &as},
 	}
-	return uploadAndSubmitCompactSnapshot(s, grant, server, collectionOpts, logger, activityState.CollectedAt, false, "activity")
+	return uploadAndSubmitCompactSnapshot(ctx, s, grant, server, collectionOpts, logger, activityState.CollectedAt, false, "activity")
 }

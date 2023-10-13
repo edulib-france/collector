@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -10,21 +11,11 @@ import (
 	"github.com/pganalyze/collector/state"
 )
 
-const relationsSQLDefaultOptionalFields = "0"
-const relationsSQLpg93OptionalFields = "c.relminmxid"
 const relationsSQLOidField = "c.relhasoids AS relation_has_oids"
 const relationsSQLpg12OidField = "false AS relation_has_oids"
-const relationsSQLpartBoundField = "''"
-const relationsSQLpartStratField = "''"
-const relationsSQLpartColsField = "''"
-const relationsSQLpartExprField = "''"
-const relationsSQLpg10PartBoundField = "COALESCE(pg_get_expr(c.relpartbound, c.oid, true), '') AS partition_boundary"
-const relationsSQLpg10partStratField = "COALESCE((SELECT p.partstrat FROM pg_partitioned_table p WHERE p.partrelid = c.oid), '') AS partition_strategy"
-const relationsSQLpg10PartColsField = "(SELECT p.partattrs FROM pg_partitioned_table p WHERE p.partrelid = c.oid) AS partition_columns"
-const relationsSQLpg10partExprField = "COALESCE(pg_catalog.pg_get_partkeydef(c.oid), '') AS partition_expr"
 
 const relationsSQL string = `
-	 WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+	 WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL AND locktype = 'relation')
  SELECT c.oid,
 				n.nspname AS schema_name,
 				c.relname AS table_name,
@@ -35,16 +26,18 @@ const relationsSQL string = `
 				c.relhassubclass AS relation_has_inheritance_children,
 				c.reltoastrelid IS NOT NULL AS relation_has_toast,
 				c.relfrozenxid AS relation_frozen_xid,
-				%s,
+				c.relminmxid AS relation_min_mxid,
 				COALESCE((SELECT inhparent FROM pg_inherits WHERE inhrelid = c.oid ORDER BY inhseqno LIMIT 1), 0) AS parent_relid,
-				%s,
-				%s,
-				%s,
-				%s,
-				locked_relids.relid IS NOT NULL
+				COALESCE(pg_get_expr(c.relpartbound, c.oid, true), '') AS partition_boundary,
+				COALESCE((SELECT p.partstrat FROM pg_partitioned_table p WHERE p.partrelid = c.oid), '') AS partition_strategy,
+				(SELECT p.partattrs FROM pg_partitioned_table p WHERE p.partrelid = c.oid) AS partition_columns,
+				COALESCE(pg_catalog.pg_get_partkeydef(c.oid), '') AS partition_expr,
+				locked_relids.relid IS NOT NULL AS exclusively_locked,
+				COALESCE(toast.relname, '') AS toast_table
 	 FROM pg_catalog.pg_class c
 	 LEFT JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
 	 LEFT JOIN locked_relids ON (c.oid = locked_relids.relid)
+	 LEFT JOIN pg_class toast ON (c.reltoastrelid = toast.oid AND toast.relkind = 't')
 	WHERE c.relkind IN ('r','v','m','p')
 				AND c.relpersistence <> 't'
 				AND c.oid NOT IN (SELECT pd.objid FROM pg_catalog.pg_depend pd WHERE pd.deptype = 'e' AND pd.classid = 'pg_catalog.pg_class'::regclass)
@@ -52,7 +45,7 @@ const relationsSQL string = `
 				AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)`
 
 const columnsSQL string = `
-	 WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+	 WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL AND locktype = 'relation')
  SELECT c.oid,
 				a.attname AS name,
 				pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
@@ -63,7 +56,8 @@ const columnsSQL string = `
 			AND a.atthasdef) AS default_value,
 				a.attnotnull AS not_null,
 				a.attnum AS position,
-				a.atttypid as type_oid
+				a.atttypid as type_oid,
+				false AS exclusively_locked
  FROM pg_catalog.pg_class c
  LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
  LEFT JOIN pg_catalog.pg_attribute a ON c.oid = a.attrelid
@@ -75,10 +69,19 @@ const columnsSQL string = `
 			 AND NOT a.attisdropped
 			 AND c.oid NOT IN (SELECT relid FROM locked_relids)
 			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)
- ORDER BY a.attnum`
+ UNION ALL
+ SELECT relid,
+		'',
+		'',
+		NULL,
+		false,
+		0,
+		0,
+		true AS exclusively_locked
+   FROM locked_relids`
 
 const indicesSQL string = `
-	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL AND locktype = 'relation')
 SELECT c.oid,
 			 c2.oid,
 			 i.indkey::text,
@@ -89,7 +92,8 @@ SELECT c.oid,
 			 pg_catalog.pg_get_indexdef(i.indexrelid, 0, FALSE),
 			 pg_catalog.pg_get_constraintdef(con.oid, FALSE),
 			 c2.reloptions,
-			 (SELECT a.amname FROM pg_catalog.pg_am a JOIN pg_catalog.pg_opclass o ON (a.oid = o.opcmethod) WHERE o.oid = i.indclass[0])
+			 (SELECT a.amname FROM pg_catalog.pg_am a JOIN pg_catalog.pg_opclass o ON (a.oid = o.opcmethod) WHERE o.oid = i.indclass[0]),
+			 false AS exclusively_locked
 	FROM pg_catalog.pg_class c
 	JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
 	JOIN pg_catalog.pg_index i ON (c.oid = i.indrelid)
@@ -103,10 +107,25 @@ SELECT c.oid,
 			 AND n.nspname NOT IN ('pg_catalog','pg_toast','information_schema')
 			 AND c.oid NOT IN (SELECT relid FROM locked_relids)
 			 AND c2.oid NOT IN (SELECT relid FROM locked_relids)
-			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)`
+			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)
+ UNION ALL
+ SELECT relid,
+		0,
+		'',
+		'',
+		false,
+		false,
+		false,
+		'',
+		NULL,
+		NULL,
+		'',
+		true AS exclusively_locked
+  FROM locked_relids
+`
 
 const constraintsSQL string = `
-	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL AND locktype = 'relation')
 SELECT c.oid,
 			 conname,
 			 contype,
@@ -116,19 +135,37 @@ SELECT c.oid,
 			 confkey,
 			 confupdtype,
 			 confdeltype,
-			 confmatchtype
+			 confmatchtype,
+			 false AS exclusively_locked
 	FROM pg_catalog.pg_constraint r
 			 JOIN pg_catalog.pg_class c ON (r.conrelid = c.oid)
 			 JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
-WHERE n.nspname NOT IN ('pg_catalog','pg_toast','information_schema')
+WHERE c.relkind IN ('r','v','m','p')
+			AND c.relpersistence <> 't'
 			AND c.oid NOT IN (SELECT pd.objid FROM pg_catalog.pg_depend pd WHERE pd.deptype = 'e' AND pd.classid = 'pg_catalog.pg_class'::regclass)
+			AND n.nspname NOT IN ('pg_catalog','pg_toast','information_schema')
 			AND c.oid NOT IN (SELECT relid FROM locked_relids)
-			AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)`
+			AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)
+UNION ALL
+SELECT relid,
+	   '',
+	   '',
+	   '',
+	   NULL,
+	   0,
+	   NULL,
+	   '',
+	   '',
+	   '',
+	   true AS exclusively_locked
+  FROM locked_relids
+`
 
 const viewDefinitionSQL string = `
-	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL)
+	WITH locked_relids AS (SELECT DISTINCT relation relid FROM pg_catalog.pg_locks WHERE mode = 'AccessExclusiveLock' AND relation IS NOT NULL AND locktype = 'relation')
 SELECT c.oid,
-			 pg_catalog.pg_get_viewdef(c.oid) AS view_definition
+			 pg_catalog.pg_get_viewdef(c.oid) AS view_definition,
+			 false AS exclusively_locked
 	FROM pg_catalog.pg_class c
 	LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 	WHERE c.relkind IN ('v','m')
@@ -136,36 +173,19 @@ SELECT c.oid,
 			 AND c.oid NOT IN (SELECT pd.objid FROM pg_catalog.pg_depend pd WHERE pd.deptype = 'e' AND pd.classid = 'pg_catalog.pg_class'::regclass)
 			 AND n.nspname NOT IN ('pg_catalog','pg_toast','information_schema')
 			 AND c.oid NOT IN (SELECT relid FROM locked_relids)
-			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)`
+			 AND ($1 = '' OR (n.nspname || '.' || c.relname) !~* $1)
+UNION ALL
+SELECT relid,
+	   '',
+	   true AS exclusively_locked
+  FROM locked_relids
+`
 
-func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentDatabaseOid state.Oid, ignoreRegexp string) ([]state.PostgresRelation, error) {
+func GetRelations(ctx context.Context, db *sql.DB, postgresVersion state.PostgresVersion, currentDatabaseOid state.Oid, ignoreRegexp string) ([]state.PostgresRelation, error) {
 	relations := make(map[state.Oid]state.PostgresRelation, 0)
 
 	// Relations
-	var optionalFields string
 	var oidField string
-	var partBoundField string
-	var partStratField string
-	var partColsField string
-	var partExprField string
-
-	if postgresVersion.Numeric >= state.PostgresVersion93 {
-		optionalFields = relationsSQLpg93OptionalFields
-	} else {
-		optionalFields = relationsSQLDefaultOptionalFields
-	}
-
-	if postgresVersion.Numeric >= state.PostgresVersion10 {
-		partBoundField = relationsSQLpg10PartBoundField
-		partStratField = relationsSQLpg10partStratField
-		partColsField = relationsSQLpg10PartColsField
-		partExprField = relationsSQLpg10partExprField
-	} else {
-		partBoundField = relationsSQLpartBoundField
-		partStratField = relationsSQLpartStratField
-		partColsField = relationsSQLpartColsField
-		partExprField = relationsSQLpartExprField
-	}
 
 	if postgresVersion.Numeric >= state.PostgresVersion12 {
 		oidField = relationsSQLpg12OidField
@@ -173,8 +193,7 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 		oidField = relationsSQLOidField
 	}
 
-	rows, err := db.Query(QueryMarkerSQL+fmt.Sprintf(relationsSQL, oidField,
-		optionalFields, partBoundField, partStratField, partColsField, partExprField), ignoreRegexp)
+	rows, err := db.QueryContext(ctx, QueryMarkerSQL+fmt.Sprintf(relationsSQL, oidField), ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("Relations/Query: %s", err)
 		return nil, err
@@ -190,7 +209,7 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 			&options, &row.HasOids, &row.PersistenceType, &row.HasInheritanceChildren,
 			&row.HasToast, &row.FrozenXID, &row.MinimumMultixactXID, &row.ParentTableOid,
 			&row.PartitionBoundary, &row.PartitionStrategy, &partCols, &row.PartitionedBy,
-			&row.ExclusivelyLocked)
+			&row.ExclusivelyLocked, &row.ToastName)
 		if err != nil {
 			err = fmt.Errorf("Relations/Scan: %s", err)
 			return nil, err
@@ -216,8 +235,13 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 		relations[row.Oid] = row
 	}
 
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("Relations/Rows: %s", err)
+		return nil, err
+	}
+
 	// Columns
-	rows, err = db.Query(QueryMarkerSQL+columnsSQL, ignoreRegexp)
+	rows, err = db.QueryContext(ctx, QueryMarkerSQL+columnsSQL, ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("Columns/Query: %s", err)
 		return nil, err
@@ -227,21 +251,36 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 
 	for rows.Next() {
 		var row state.PostgresColumn
+		var exclusivelyLocked bool
 
 		err = rows.Scan(&row.RelationOid, &row.Name, &row.DataType, &row.DefaultValue,
-			&row.NotNull, &row.Position, &row.TypeOid)
+			&row.NotNull, &row.Position, &row.TypeOid, &exclusivelyLocked)
 		if err != nil {
 			err = fmt.Errorf("Columns/Scan: %s", err)
 			return nil, err
 		}
 
-		relation := relations[row.RelationOid]
-		relation.Columns = append(relation.Columns, row)
+		relation, ok := relations[row.RelationOid]
+		if !ok {
+			continue
+		}
+
+		if exclusivelyLocked {
+			relation.ExclusivelyLocked = true
+		} else {
+			relation.Columns = append(relation.Columns, row)
+		}
+
 		relations[row.RelationOid] = relation
 	}
 
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("Columns/Rows: %s", err)
+		return nil, err
+	}
+
 	// Indices
-	rows, err = db.Query(QueryMarkerSQL+indicesSQL, ignoreRegexp)
+	rows, err = db.QueryContext(ctx, QueryMarkerSQL+indicesSQL, ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("Indices/Query: %s", err)
 		return nil, err
@@ -253,9 +292,11 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 		var row state.PostgresIndex
 		var columns string
 		var options null.String
+		var exclusivelyLocked bool
 
 		err = rows.Scan(&row.RelationOid, &row.IndexOid, &columns, &row.Name, &row.IsPrimary,
-			&row.IsUnique, &row.IsValid, &row.IndexDef, &row.ConstraintDef, &options, &row.IndexType)
+			&row.IsUnique, &row.IsValid, &row.IndexDef, &row.ConstraintDef, &options, &row.IndexType,
+			&exclusivelyLocked)
 		if err != nil {
 			err = fmt.Errorf("Indices/Scan: %s", err)
 			return nil, err
@@ -274,13 +315,27 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 			}
 		}
 
-		relation := relations[row.RelationOid]
-		relation.Indices = append(relation.Indices, row)
+		relation, ok := relations[row.RelationOid]
+		if !ok {
+			continue
+		}
+
+		if exclusivelyLocked {
+			relation.ExclusivelyLocked = true
+		} else {
+			relation.Indices = append(relation.Indices, row)
+		}
+
 		relations[row.RelationOid] = relation
 	}
 
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("Indices/Rows: %s", err)
+		return nil, err
+	}
+
 	// Constraints
-	rows, err = db.Query(QueryMarkerSQL+constraintsSQL, ignoreRegexp)
+	rows, err = db.QueryContext(ctx, QueryMarkerSQL+constraintsSQL, ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("Constraints/Query: %s", err)
 		return nil, err
@@ -292,10 +347,11 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 		var row state.PostgresConstraint
 		var columns, foreignColumns null.String
 		var foreignUpdateType, foreignDeleteType, foreignMatchType string
+		var exclusivelyLocked bool
 
 		err = rows.Scan(&row.RelationOid, &row.Name, &row.Type, &row.ConstraintDef,
 			&columns, &row.ForeignOid, &foreignColumns, &foreignUpdateType,
-			&foreignDeleteType, &foreignMatchType)
+			&foreignDeleteType, &foreignMatchType, &exclusivelyLocked)
 		if err != nil {
 			err = fmt.Errorf("Constraints/Scan: %s", err)
 			return nil, err
@@ -323,13 +379,27 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 			}
 		}
 
-		relation := relations[row.RelationOid]
-		relation.Constraints = append(relation.Constraints, row)
+		relation, ok := relations[row.RelationOid]
+		if !ok {
+			continue
+		}
+
+		if exclusivelyLocked {
+			relation.ExclusivelyLocked = true
+		} else {
+			relation.Constraints = append(relation.Constraints, row)
+		}
+
 		relations[row.RelationOid] = relation
 	}
 
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("Constraints/Rows: %s", err)
+		return nil, err
+	}
+
 	// View definitions
-	rows, err = db.Query(QueryMarkerSQL+viewDefinitionSQL, ignoreRegexp)
+	rows, err = db.QueryContext(ctx, QueryMarkerSQL+viewDefinitionSQL, ignoreRegexp)
 	if err != nil {
 		err = fmt.Errorf("Views/Prepare: %s", err)
 		return nil, err
@@ -340,16 +410,31 @@ func GetRelations(db *sql.DB, postgresVersion state.PostgresVersion, currentData
 	for rows.Next() {
 		var relationOid state.Oid
 		var viewDefinition string
+		var exclusivelyLocked bool
 
-		err := rows.Scan(&relationOid, &viewDefinition)
+		err := rows.Scan(&relationOid, &viewDefinition, &exclusivelyLocked)
 		if err != nil {
 			err = fmt.Errorf("Views/Scan: %s", err)
 			return nil, err
 		}
 
-		relation := relations[relationOid]
-		relation.ViewDefinition = viewDefinition
+		relation, ok := relations[relationOid]
+		if !ok {
+			continue
+		}
+
+		if exclusivelyLocked {
+			relation.ExclusivelyLocked = true
+		} else {
+			relation.ViewDefinition = viewDefinition
+		}
+
 		relations[relationOid] = relation
+	}
+
+	if err := rows.Err(); err != nil {
+		err = fmt.Errorf("Views/Rows: %s", err)
+		return nil, err
 	}
 
 	// Flip the oid-based map into an array

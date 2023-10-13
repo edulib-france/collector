@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,41 +12,49 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/pganalyze/collector/output/pganalyze_collector"
 	snapshot "github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/output/transform"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
 	uuid "github.com/satori/go.uuid"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func SendFull(server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, newState state.PersistedState, diffState state.DiffState, transientState state.TransientState, collectedIntervalSecs uint32) error {
+func SendFull(ctx context.Context, server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, newState state.PersistedState, diffState state.DiffState, transientState state.TransientState, collectedIntervalSecs uint32) error {
 	s := transform.StateToSnapshot(newState, diffState, transientState)
 	s.CollectedIntervalSecs = collectedIntervalSecs
-	s.CollectorErrors = logger.ErrorMessages
-
-	return submitFull(s, server, collectionOpts, logger, newState.CollectedAt, false)
+	err := verifyIntegrity(&s)
+	if err != nil {
+		logger.PrintError(fmt.Sprintf("Snapshot integrity check failed: %s; please contact support", err))
+		// Don't return an error here, since that would skip the state update, and
+		// if the integrity failure is due to a state diffing issue, we would not
+		// be able to make progress. Instead, send a failed snapshot directly.
+		return SendFailedFull(ctx, server, collectionOpts, logger)
+	} else {
+		return submitFull(ctx, s, server, collectionOpts, logger, newState.CollectedAt, false)
+	}
 }
 
-func SendFailedFull(server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger) error {
-	s := snapshot.FullSnapshot{FailedRun: true, CollectorErrors: logger.ErrorMessages}
-	return submitFull(s, server, collectionOpts, logger, time.Now(), true)
+func SendFailedFull(ctx context.Context, server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger) error {
+	s := snapshot.FullSnapshot{FailedRun: true}
+	return submitFull(ctx, s, server, collectionOpts, logger, time.Now(), true)
 }
 
-func submitFull(s snapshot.FullSnapshot, server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, collectedAt time.Time, quiet bool) error {
+func submitFull(ctx context.Context, s snapshot.FullSnapshot, server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, collectedAt time.Time, quiet bool) error {
 	var err error
 	var data []byte
 
 	snapshotUUID := uuid.NewV4()
 
+	s.CollectorErrors = logger.ErrorMessages
 	s.SnapshotVersionMajor = 1
 	s.SnapshotVersionMinor = 0
 	s.CollectorVersion = util.CollectorNameAndVersion
 	s.SnapshotUuid = snapshotUUID.String()
-	s.CollectedAt, _ = ptypes.TimestampProto(collectedAt)
+	s.CollectedAt = timestamppb.New(collectedAt)
 	s.CollectorLogSnapshotDisabled = server.CollectionStatus.LogSnapshotDisabled
 	s.CollectorLogSnapshotDisabledReason = server.CollectionStatus.LogSnapshotDisabledReason
 
@@ -61,17 +70,47 @@ func submitFull(s snapshot.FullSnapshot, server *state.Server, collectionOpts st
 	w.Close()
 
 	if !collectionOpts.SubmitCollectedData {
-		debugOutputAsJSON(logger, compressedData)
+		if collectionOpts.OutputAsJson {
+			debugOutputAsJSON(logger, compressedData)
+		} else if !quiet {
+			logger.PrintInfo("Collected snapshot successfully")
+		}
 		return nil
 	}
 
-	s3Location, err := uploadSnapshot(server.Config.HTTPClientWithRetry, server.Grant, logger, compressedData, snapshotUUID.String())
+	s3Location, err := uploadSnapshot(ctx, server.Config.HTTPClientWithRetry, server.Grant, logger, compressedData, snapshotUUID.String())
 	if err != nil {
 		logger.PrintError("Error uploading to S3: %s", err)
 		return err
 	}
 
-	return submitSnapshot(server, collectionOpts, logger, s3Location, collectedAt, quiet)
+	return submitSnapshot(ctx, server, collectionOpts, logger, s3Location, collectedAt, quiet)
+}
+
+func verifyIntegrity(s *snapshot.FullSnapshot) error {
+	if len(s.DatabaseInformations) != len(s.DatabaseReferences) {
+		return fmt.Errorf("found %d DatabaseInformations but %d DatabaseReferences", len(s.DatabaseInformations), len(s.DatabaseReferences))
+	}
+	if len(s.RoleInformations) != len(s.RoleReferences) {
+		return fmt.Errorf("found %d RoleInformations but %d RoleReferences", len(s.RoleInformations), len(s.RoleReferences))
+	}
+	if len(s.TablespaceInformations) != len(s.TablespaceReferences) {
+		return fmt.Errorf("found %d TablespaceInformations but %d TablespaceReferences", len(s.TablespaceInformations), len(s.TablespaceReferences))
+	}
+	if len(s.RelationInformations) != len(s.RelationReferences) {
+		return fmt.Errorf("found %d RelationInformations but %d RelationReferences", len(s.RelationInformations), len(s.RelationReferences))
+	}
+	if len(s.IndexInformations) != len(s.IndexReferences) {
+		return fmt.Errorf("found %d IndexInformations but %d IndexReferences", len(s.IndexInformations), len(s.IndexReferences))
+	}
+	if len(s.FunctionInformations) != len(s.FunctionReferences) {
+		return fmt.Errorf("found %d FunctionInformations but %d FunctionReferences", len(s.FunctionInformations), len(s.FunctionReferences))
+	}
+	if len(s.QueryInformations) != len(s.QueryReferences) {
+		return fmt.Errorf("found %d QueryInformations but %d QueryReferences", len(s.QueryInformations), len(s.QueryReferences))
+	}
+
+	return nil
 }
 
 func debugOutputAsJSON(logger *util.Logger, compressedData bytes.Buffer) {
@@ -94,18 +133,17 @@ func debugOutputAsJSON(logger *util.Logger, compressedData bytes.Buffer) {
 	}
 
 	var out bytes.Buffer
-	var marshaler jsonpb.Marshaler
-	dataJSON, err := marshaler.MarshalToString(s)
+	dataJSON, err := protojson.Marshal(s)
 	if err != nil {
 		logger.PrintError("Failed to transform protocol buffers to JSON: %s", err)
 		return
 	}
-	json.Indent(&out, []byte(dataJSON), "", "\t")
+	json.Indent(&out, dataJSON, "", "\t")
 	logger.PrintInfo("Dry run - data that would have been sent will be output on stdout:\n")
 	fmt.Printf("%s\n", out.String())
 }
 
-func submitSnapshot(server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, s3Location string, collectedAt time.Time, quiet bool) error {
+func submitSnapshot(ctx context.Context, server *state.Server, collectionOpts state.CollectionOpts, logger *util.Logger, s3Location string, collectedAt time.Time, quiet bool) error {
 	requestURL := server.Config.APIBaseURL + "/v2/snapshots"
 
 	if collectionOpts.TestRun {
@@ -117,7 +155,7 @@ func submitSnapshot(server *state.Server, collectionOpts state.CollectionOpts, l
 		"collected_at": {fmt.Sprintf("%d", collectedAt.Unix())},
 	}
 
-	req, err := http.NewRequest("POST", requestURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}

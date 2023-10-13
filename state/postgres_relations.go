@@ -32,6 +32,8 @@ type PostgresRelation struct {
 	// True if another process is currently holding an AccessExclusiveLock on this
 	// relation, this also means we don't collect columns/index/constraints data
 	ExclusivelyLocked bool
+
+	ToastName string
 }
 
 type PostgresColumn struct {
@@ -96,4 +98,9 @@ func (i PostgresIndex) Fillfactor() int32 {
 		return 90
 	}
 	return -1
+}
+
+// FullFrozenXID - Returns frozenXid in 64-bit FullTransactionId
+func (r PostgresRelation) FullFrozenXID(currentXactId int64) int64 {
+	return int64(XidToXid8(r.FrozenXID, Xid8(currentXactId)))
 }

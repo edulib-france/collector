@@ -35,19 +35,18 @@ type PostgresStatementStats struct {
 	TempBlksWritten   int64   // Total number of temp blocks written by the statement
 	BlkReadTime       float64 // Total time the statement spent reading blocks, in milliseconds (if track_io_timing is enabled, otherwise zero)
 	BlkWriteTime      float64 // Total time the statement spent writing blocks, in milliseconds (if track_io_timing is enabled, otherwise zero)
-
-	// Postgres 9.5+
-	MinTime    null.Float // Minimum time spent in the statement, in milliseconds
-	MaxTime    null.Float // Maximum time spent in the statement, in milliseconds
-	MeanTime   null.Float // Mean time spent in the statement, in milliseconds
-	StddevTime null.Float // Population standard deviation of time spent in the statement, in milliseconds
+	MinTime           float64 // Minimum time spent in the statement, in milliseconds
+	MaxTime           float64 // Maximum time spent in the statement, in milliseconds
+	MeanTime          float64 // Mean time spent in the statement, in milliseconds
+	StddevTime        float64 // Population standard deviation of time spent in the statement, in milliseconds
 }
 
-// PostgresStatementKey - Information that uniquely identifies a query
+// PostgresStatementKey - Information that uniquely identifies a query (this needs to match pgssHashKey in pg_stat_statements.c)
 type PostgresStatementKey struct {
-	DatabaseOid Oid   // OID of database in which the statement was executed
-	UserOid     Oid   // OID of user who executed the statement
-	QueryID     int64 // Postgres 9.4+: Internal hash code, computed from the statement's parse tree
+	DatabaseOid Oid       // OID of database in which the statement was executed
+	UserOid     Oid       // OID of user who executed the statement
+	QueryID     int64     // Internal hash code, computed from the statement's parse tree (note pg_stat_statements stores this as a uint64, but returns it as a int64 in the user-facing API)
+	TopLevel    null.Bool // Whether this statement was executed directly (at the top level), or from within a function / stored procedure (on older Postgres versions this is not tracked, so we set it to NULL)
 }
 
 type PostgresStatementStatsTimeKey struct {

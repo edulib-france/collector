@@ -1,21 +1,24 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/rds/rdsutils"
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
+	"github.com/pganalyze/collector/util/awsutil"
 )
 
-func EstablishConnection(server *state.Server, logger *util.Logger, globalCollectionOpts state.CollectionOpts, databaseName string) (connection *sql.DB, err error) {
-	connection, err = connectToDb(server.Config, logger, globalCollectionOpts, databaseName)
+func EstablishConnection(ctx context.Context, server *state.Server, logger *util.Logger, globalCollectionOpts state.CollectionOpts, databaseName string) (connection *sql.DB, err error) {
+	connection, err = connectToDb(ctx, server.Config, logger, globalCollectionOpts, databaseName)
 	if err != nil {
 		if err.Error() == "pq: SSL is not enabled on the server" && (server.Config.DbSslMode == "prefer" || server.Config.DbSslMode == "") {
 			server.Config.DbSslModePreferFailed = true
-			connection, err = connectToDb(server.Config, logger, globalCollectionOpts, databaseName)
+			connection, err = connectToDb(ctx, server.Config, logger, globalCollectionOpts, databaseName)
 		}
 	}
 
@@ -23,19 +26,48 @@ func EstablishConnection(server *state.Server, logger *util.Logger, globalCollec
 		return
 	}
 
-	err = validateConnectionCount(connection, logger, server.Config.MaxCollectorConnections, globalCollectionOpts)
+	err = validateConnectionCount(ctx, connection, logger, server.Config.MaxCollectorConnections, globalCollectionOpts)
 	if err != nil {
 		connection.Close()
 		return
 	}
 
-	SetDefaultStatementTimeout(connection, logger, server)
+	err = SetDefaultStatementTimeout(ctx, connection, logger, server)
+	if err != nil {
+		connection.Close()
+		return
+	}
 
 	return
 }
 
-func connectToDb(config config.ServerConfig, logger *util.Logger, globalCollectionOpts state.CollectionOpts, databaseName string) (*sql.DB, error) {
-	connectString := config.GetPqOpenString(databaseName)
+func connectToDb(ctx context.Context, config config.ServerConfig, logger *util.Logger, globalCollectionOpts state.CollectionOpts, databaseName string) (*sql.DB, error) {
+	var dbPasswordOverride string
+
+	if config.DbUseIamAuth {
+		if config.SystemType != "amazon_rds" {
+			return nil, fmt.Errorf("IAM auth is only supported for Amazon RDS and Aurora - turn off IAM auth setting to use password-based authentication")
+		}
+		sess, err := awsutil.GetAwsSession(config)
+		if err != nil {
+			return nil, err
+		}
+		if dbToken, err := rdsutils.BuildAuthToken(
+			fmt.Sprintf("%s:%d", config.GetDbHost(), config.GetDbPort()),
+			config.AwsRegion,
+			config.GetDbUsername(),
+			sess.Config.Credentials,
+		); err != nil {
+			return nil, err
+		} else {
+			dbPasswordOverride = dbToken
+		}
+	}
+
+	connectString, err := config.GetPqOpenString(databaseName, dbPasswordOverride)
+	if err != nil {
+		return nil, err
+	}
 	connectString += " application_name=" + globalCollectionOpts.CollectorApplicationName
 
 	// logger.PrintVerbose("sql.Open(\"postgres\", \"%s\")", connectString)
@@ -48,7 +80,7 @@ func connectToDb(config config.ServerConfig, logger *util.Logger, globalCollecti
 	db.SetMaxOpenConns(1)
 	db.SetConnMaxLifetime(30 * time.Second)
 
-	err = db.Ping()
+	err = db.PingContext(ctx)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -57,10 +89,13 @@ func connectToDb(config config.ServerConfig, logger *util.Logger, globalCollecti
 	return db, nil
 }
 
-func validateConnectionCount(connection *sql.DB, logger *util.Logger, maxCollectorConnections int, globalCollectionOpts state.CollectionOpts) error {
+func validateConnectionCount(ctx context.Context, connection *sql.DB, logger *util.Logger, maxCollectorConnections int, globalCollectionOpts state.CollectionOpts) error {
 	var connectionCount int
 
-	connection.QueryRow(QueryMarkerSQL + "SELECT pg_catalog.count(*) FROM pg_catalog.pg_stat_activity WHERE application_name = '" + globalCollectionOpts.CollectorApplicationName + "'").Scan(&connectionCount)
+	err := connection.QueryRowContext(ctx, QueryMarkerSQL+"SELECT pg_catalog.count(*) FROM pg_catalog.pg_stat_activity WHERE application_name = '"+globalCollectionOpts.CollectorApplicationName+"'").Scan(&connectionCount)
+	if err != nil {
+		return err
+	}
 
 	if connectionCount > maxCollectorConnections {
 		return fmt.Errorf("Too many open monitoring connections (current: %d, maximum allowed: %d), exiting", connectionCount, maxCollectorConnections)
@@ -69,13 +104,16 @@ func validateConnectionCount(connection *sql.DB, logger *util.Logger, maxCollect
 	return nil
 }
 
-func SetStatementTimeout(connection *sql.DB, statementTimeoutMs int32) {
-	connection.Exec(fmt.Sprintf("%sSET statement_timeout = %d", QueryMarkerSQL, statementTimeoutMs))
+func SetStatementTimeout(ctx context.Context, connection *sql.DB, statementTimeoutMs int32) error {
+	_, err := connection.ExecContext(ctx, fmt.Sprintf("%sSET statement_timeout = %d", QueryMarkerSQL, statementTimeoutMs))
+	if err != nil {
+		return err
+	}
 
-	return
+	return nil
 }
 
-func SetDefaultStatementTimeout(connection *sql.DB, logger *util.Logger, server *state.Server) {
+func SetDefaultStatementTimeout(ctx context.Context, connection *sql.DB, logger *util.Logger, server *state.Server) error {
 	statementTimeoutMs := server.Grant.Config.Features.StatementTimeoutMs
 	if statementTimeoutMs == 0 { // Default value
 		statementTimeoutMs = 30000
@@ -84,21 +122,27 @@ func SetDefaultStatementTimeout(connection *sql.DB, logger *util.Logger, server 
 	// Assume anything below 100ms to be set in error - its not reasonable to have our queries run faster than that
 	if statementTimeoutMs < 100 {
 		logger.PrintVerbose("Ignoring invalid statement timeout of %dms (set it to at least 100ms)", statementTimeoutMs)
-		return
+		return nil
 	}
 
-	SetStatementTimeout(connection, statementTimeoutMs)
+	err := SetStatementTimeout(ctx, connection, statementTimeoutMs)
+	if err != nil {
+		return err
+	}
 
-	return
+	return nil
 }
 
-func SetQueryTextStatementTimeout(connection *sql.DB, logger *util.Logger, server *state.Server) {
+func SetQueryTextStatementTimeout(ctx context.Context, connection *sql.DB, logger *util.Logger, server *state.Server) error {
 	queryTextStatementTimeoutMs := server.Grant.Config.Features.StatementTimeoutMsQueryText
 	if queryTextStatementTimeoutMs == 0 { // Default value
 		queryTextStatementTimeoutMs = 120000
 	}
 
-	SetStatementTimeout(connection, queryTextStatementTimeoutMs)
+	err := SetStatementTimeout(ctx, connection, queryTextStatementTimeoutMs)
+	if err != nil {
+		return err
+	}
 
-	return
+	return nil
 }

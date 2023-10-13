@@ -1,6 +1,9 @@
 package logs_test
 
 import (
+	"bufio"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +31,8 @@ var replaceTests = []replaceTestpair{
 	},
 	{
 		filterLogSecret: "statement_parameter",
-		input:           "2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:LOG:  duration: 1242.570 ms  statement: SELECT 1\n",
-		output:          "2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:LOG:  duration: 1242.570 ms  statement: SELECT 1\n",
+		input:           "2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:LOG:  duration: 4079.697 ms  execute <unnamed>: \nSELECT * FROM x WHERE y = $1 LIMIT $2\n2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:DETAIL:  parameters: $1 = 'long string', $2 = '1'\n",
+		output:          "2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:LOG:  duration: 4079.697 ms  execute <unnamed>: \nSELECT * FROM x WHERE y = $1 LIMIT $2\n2018-03-11 20:00:02 UTC:1.1.1.1(2):a@b:[3]:DETAIL:  parameters: $1 = 'XXXXXXXXXXX', $2 = 'X'\n",
 	},
 	{
 		filterLogSecret: "none",
@@ -60,7 +63,8 @@ var replaceTests = []replaceTestpair{
 
 func TestReplaceSecrets(t *testing.T) {
 	for _, pair := range replaceTests {
-		logLines, _, _ := logs.ParseAndAnalyzeBuffer(string(pair.input), 0, time.Time{}, &state.Server{})
+		reader := bufio.NewReader(strings.NewReader(pair.input))
+		logLines, _ := logs.ParseAndAnalyzeBuffer(reader, time.Time{}, &state.Server{LogTimezoneMutex: &sync.Mutex{}})
 		output := logs.ReplaceSecrets([]byte(pair.input), logLines, state.ParseFilterLogSecret(pair.filterLogSecret))
 
 		cfg := pretty.CompareConfig

@@ -7,11 +7,13 @@ import (
 
 	"github.com/pganalyze/collector/config"
 	"github.com/pganalyze/collector/output/pganalyze_collector"
+	"github.com/pganalyze/collector/util"
 	uuid "github.com/satori/go.uuid"
 )
 
 type GrantLogs struct {
 	Valid         bool
+	Config        GrantConfig            `json:"config"`
 	Logdata       GrantS3                `json:"logdata"`
 	Snapshot      GrantS3                `json:"snapshot"`
 	EncryptionKey GrantLogsEncryptionKey `json:"encryption_key"`
@@ -179,15 +181,14 @@ type LogLine struct {
 	SecretMarkers      []LogSecretMarker
 }
 
-func (logFile *LogFile) Cleanup() {
+func (logFile *LogFile) Cleanup(logger *util.Logger) {
 	if logFile.TmpFile != nil {
-		logFile.TmpFile.Close()
-		os.Remove(logFile.TmpFile.Name())
+		util.CleanUpTmpFile(logFile.TmpFile, logger)
 	}
 }
 
-func (ls *TransientLogState) Cleanup() {
+func (ls *TransientLogState) Cleanup(logger *util.Logger) {
 	for _, logFile := range ls.LogFiles {
-		logFile.Cleanup()
+		logFile.Cleanup(logger)
 	}
 }

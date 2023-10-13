@@ -30,6 +30,8 @@ func diffState(logger *util.Logger, prevState state.PersistedState, newState sta
 	diffState.SystemDiskStats = diffSystemDiskStats(newState.System.DiskStats, prevState.System.DiskStats, collectedIntervalSecs)
 	diffState.CollectorStats = diffCollectorStats(newState.CollectorStats, prevState.CollectorStats)
 
+	diffState.DatabaseStats = diffDatabaseStats(newState.DatabaseStats, prevState.DatabaseStats)
+
 	return
 }
 
@@ -61,9 +63,11 @@ func diffRelationStats(new state.PostgresRelationStatsMap, prev state.PostgresRe
 	diff = make(state.DiffedPostgresRelationStatsMap)
 	for key, stats := range new {
 		prevStats, exists := prev[key]
-		if exists {
+		if stats.ExclusivelyLocked {
+			// Skip, we don't have any usable data for this relation
+		} else if exists && !prevStats.ExclusivelyLocked {
 			diff[key] = stats.DiffSince(prevStats)
-		} else if followUpRun { // New since the last run
+		} else if followUpRun && !prevStats.ExclusivelyLocked { // New relation since the last run
 			diff[key] = stats.DiffSince(state.PostgresRelationStats{})
 		} else {
 			diff[key] = state.DiffedPostgresRelationStats{
@@ -72,10 +76,18 @@ func diffRelationStats(new state.PostgresRelationStatsMap, prev state.PostgresRe
 				NLiveTup:         stats.NLiveTup,
 				NDeadTup:         stats.NDeadTup,
 				NModSinceAnalyze: stats.NModSinceAnalyze,
+				NInsSinceVacuum:  stats.NInsSinceVacuum,
 				LastVacuum:       stats.LastVacuum,
 				LastAutovacuum:   stats.LastAutovacuum,
 				LastAnalyze:      stats.LastAnalyze,
 				LastAutoanalyze:  stats.LastAutoanalyze,
+				FrozenXIDAge:     stats.FrozenXIDAge,
+				MinMXIDAge:       stats.MinMXIDAge,
+				Relpages:         stats.Relpages,
+				Reltuples:        stats.Reltuples,
+				Relallvisible:    stats.Relallvisible,
+				ToastReltuples:   stats.ToastReltuples,
+				ToastRelpages:    stats.ToastRelpages,
 			}
 		}
 	}
@@ -89,9 +101,11 @@ func diffIndexStats(new state.PostgresIndexStatsMap, prev state.PostgresIndexSta
 	diff = make(state.DiffedPostgresIndexStatsMap)
 	for key, stats := range new {
 		prevStats, exists := prev[key]
-		if exists {
+		if stats.ExclusivelyLocked {
+			// Skip, we don't have any usable data for this index
+		} else if exists && !prevStats.ExclusivelyLocked {
 			diff[key] = stats.DiffSince(prevStats)
-		} else if followUpRun { // New since the last run
+		} else if followUpRun && !prevStats.ExclusivelyLocked { // New index since the last run
 			diff[key] = stats.DiffSince(state.PostgresIndexStats{})
 		} else {
 			diff[key] = state.DiffedPostgresIndexStats{
@@ -159,5 +173,25 @@ func diffSystemDiskStats(new state.DiskStatsMap, prev state.DiskStatsMap, collec
 
 func diffCollectorStats(new state.CollectorStats, prev state.CollectorStats) (diff state.DiffedCollectorStats) {
 	diff = new.DiffSince(prev)
+	return
+}
+
+func diffDatabaseStats(new state.PostgresDatabaseStatsMap, prev state.PostgresDatabaseStatsMap) (diff state.DiffedPostgresDatabaseStatsMap) {
+	followUpRun := len(prev) > 0
+
+	diff = make(state.DiffedPostgresDatabaseStatsMap)
+	for databaseOid, stats := range new {
+		prevStats, exists := prev[databaseOid]
+		if exists {
+			diff[databaseOid] = stats.DiffSince(prevStats)
+		} else if followUpRun { // New since the last run
+			diff[databaseOid] = stats.DiffSince(state.PostgresDatabaseStats{})
+		} else {
+			diff[databaseOid] = state.DiffedPostgresDatabaseStats{
+				FrozenXIDAge: stats.FrozenXIDAge,
+				MinMXIDAge:   stats.MinMXIDAge,
+			}
+		}
+	}
 	return
 }

@@ -11,24 +11,25 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Use new enough OS that has CGroupsv2 enabled (required by the integration tests)
+    runs-on: ubuntu-22.04
 
     steps:
 
     - name: Set up Go 1.x
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v4
       with:
-        go-version: 1.17
+        go-version: 1.21
       id: go
 
     - name: Set up protoc
-      uses: pganalyze/setup-protoc@v1.1.2
+      uses: pganalyze/setup-protoc@ab6203da1c3118e4406048171b09238ad31ad73e
       with:
         version: 3.14.0
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Check out code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
       with:
         submodules: true
 

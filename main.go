@@ -12,6 +12,7 @@ import (
 	"runtime/pprof"
 	"runtime/trace"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/pganalyze/collector/input/postgres"
 	"github.com/pganalyze/collector/input/system/selfhosted"
 	"github.com/pganalyze/collector/logs"
+	"github.com/pganalyze/collector/output/pganalyze_collector"
 	"github.com/pganalyze/collector/runner"
 	"github.com/pganalyze/collector/scheduler"
 	"github.com/pganalyze/collector/state"
@@ -33,12 +35,12 @@ import (
 	_ "github.com/lib/pq" // Enable database package to use Postgres
 )
 
-func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.CollectionOpts, logger *util.Logger, configFilename string) (keepRunning bool, reloadOkay bool, writeStateFile func()) {
+func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.CollectionOpts, logger *util.Logger, configFilename string) (keepRunning bool, testRunSuccess chan bool, writeStateFile func(), shutdown func()) {
 	var servers []*state.Server
 
 	keepRunning = false
-	reloadOkay = false
 	writeStateFile = func() {}
+	shutdown = func() {}
 
 	schedulerGroups, err := scheduler.GetSchedulerGroups()
 	if err != nil {
@@ -53,12 +55,29 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		return
 	}
 
-	for idx, server := range conf.Servers {
-		prefixedLogger := logger.WithPrefix(server.SectionName)
-		prefixedLogger.PrintVerbose("Identified as api_system_type: %s, api_system_scope: %s, api_system_id: %s", server.SystemType, server.SystemScope, server.SystemID)
+	for idx, cfg := range conf.Servers {
+		prefixedLogger := logger.WithPrefix(cfg.SectionName)
+		prefixedLogger.PrintVerbose("Identified as api_system_type: %s, api_system_scope: %s, api_system_id: %s", cfg.SystemType, cfg.SystemScope, cfg.SystemID)
 
-		conf.Servers[idx].HTTPClient = config.CreateHTTPClient(server, prefixedLogger, false)
-		conf.Servers[idx].HTTPClientWithRetry = config.CreateHTTPClient(server, prefixedLogger, true)
+		conf.Servers[idx].HTTPClient = config.CreateHTTPClient(cfg, prefixedLogger, false)
+		conf.Servers[idx].HTTPClientWithRetry = config.CreateHTTPClient(cfg, prefixedLogger, true)
+		if cfg.OtelExporterOtlpEndpoint != "" {
+			conf.Servers[idx].OTelTracingProvider, conf.Servers[idx].OTelTracingProviderShutdownFunc, err = config.CreateOTelTracingProvider(ctx, cfg)
+			if err != nil {
+				logger.PrintError("Failed to initialize OpenTelemetry tracing provider, disabling exports: %s", err)
+			}
+		}
+	}
+
+	shutdown = func() {
+		for _, cfg := range conf.Servers {
+			if cfg.OTelTracingProviderShutdownFunc == nil {
+				continue
+			}
+			if err := cfg.OTelTracingProviderShutdownFunc(ctx); err != nil {
+				logger.PrintError("Failed to shutdown OpenTelemetry tracing provider: %s", err)
+			}
+		}
 	}
 
 	// Avoid even running the scheduler when we already know its not needed
@@ -74,7 +93,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		if globalCollectionOpts.TestRun && globalCollectionOpts.TestSection != "" && globalCollectionOpts.TestSection != config.SectionName {
 			continue
 		}
-		servers = append(servers, &state.Server{Config: config, StateMutex: &sync.Mutex{}, LogStateMutex: &sync.Mutex{}, ActivityStateMutex: &sync.Mutex{}, CollectionStatusMutex: &sync.Mutex{}})
+		servers = append(servers, state.MakeServer(config))
 		if config.EnableReports {
 			hasAnyReportsEnabled = true
 		}
@@ -101,67 +120,80 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		state.WriteStateFile(servers, globalCollectionOpts, logger)
 	}
 
-	checkAllInitialCollectionStatus(servers, globalCollectionOpts, logger)
+	if globalCollectionOpts.TestRun {
+		logger.PrintInfo("Running collector test with %s", util.CollectorNameAndVersion)
+	}
+
+	checkAllInitialCollectionStatus(ctx, servers, globalCollectionOpts, logger)
 
 	// We intentionally don't do a test-run in the normal mode, since we're fine with
 	// a later SIGHUP that fixes the config (or a temporarily unreachable server at start)
 	if globalCollectionOpts.TestRun {
-		logger.PrintInfo("Running collector test with %s", util.CollectorNameAndVersion)
-		if globalCollectionOpts.TestReport != "" {
-			runner.RunTestReport(servers, globalCollectionOpts, logger)
-			return
-		} else if globalCollectionOpts.TestExplain {
-			for _, server := range servers {
-				prefixedLogger := logger.WithPrefix(server.Config.SectionName)
-				err := runner.EmitTestExplain(server, globalCollectionOpts, prefixedLogger)
-				if err != nil {
-					prefixedLogger.PrintError("Failed to run test explain: %s", err)
-				}
-			}
-			return
-		} else if globalCollectionOpts.TestRunLogs {
-			reloadOkay = doLogTest(servers, globalCollectionOpts, logger)
-			return
-		} else {
-			var allFullSuccessful bool
-			var allActivitySuccessful bool
-			allFullSuccessful = runner.CollectAllServers(servers, globalCollectionOpts, logger)
-			if hasAnyActivityEnabled {
-				allActivitySuccessful = runner.CollectActivityFromAllServers(servers, globalCollectionOpts, logger)
-			} else {
-				allActivitySuccessful = true
-			}
-			if hasAnyLogsEnabled {
-				// We intentionally don't fail for the regular test command if the log test fails, since you may not
-				// have Log Insights enabled on your plan (which would fail the log test when getting the log grant).
-				// In these situations we still want --test to be successful (i.e. issue a reload), but --test-logs
-				// would fail (and not reload).
-				doLogTest(servers, globalCollectionOpts, logger)
-			}
-
-			reloadOkay = allFullSuccessful && allActivitySuccessful
-			if reloadOkay {
-				// in a dry run, we will not actually have URLs; avoid this output in that case
-				var hasURLs bool
+		wg.Add(1)
+		testRunSuccess = make(chan bool)
+		go func() {
+			if globalCollectionOpts.TestReport != "" {
+				runner.RunTestReport(ctx, servers, globalCollectionOpts, logger)
+				testRunSuccess <- true
+			} else if globalCollectionOpts.TestExplain {
+				success := true
 				for _, server := range servers {
-					if server.PGAnalyzeURL != "" {
-						hasURLs = true
-						break
+					prefixedLogger := logger.WithPrefix(server.Config.SectionName)
+					err := runner.EmitTestExplain(ctx, server, globalCollectionOpts, prefixedLogger)
+					if err != nil {
+						prefixedLogger.PrintError("Failed to run test explain: %s", err)
+						success = false
 					}
 				}
-				if hasURLs {
-					fmt.Fprintln(os.Stderr)
-					fmt.Fprintln(os.Stderr, "Test successful. View servers in pganalyze:")
+				testRunSuccess <- success
+			} else if globalCollectionOpts.TestRunLogs {
+				success := doLogTest(ctx, servers, globalCollectionOpts, logger)
+				testRunSuccess <- success
+			} else {
+				var allFullSuccessful bool
+				var allActivitySuccessful bool
+				allFullSuccessful = runner.CollectAllServers(ctx, servers, globalCollectionOpts, logger)
+				if ctx.Err() == nil {
+					if hasAnyActivityEnabled {
+						allActivitySuccessful = runner.CollectActivityFromAllServers(ctx, servers, globalCollectionOpts, logger)
+					} else {
+						allActivitySuccessful = true
+					}
+				}
+				if hasAnyLogsEnabled && ctx.Err() == nil {
+					// We intentionally don't fail for the regular test command if the log test fails, since you may not
+					// have Log Insights enabled on your plan (which would fail the log test when getting the log grant).
+					// In these situations we still want --test to be successful (i.e. issue a reload), but --test-logs
+					// would fail (and not reload).
+					doLogTest(ctx, servers, globalCollectionOpts, logger)
+				}
+
+				success := allFullSuccessful && allActivitySuccessful
+				if success {
+					// in a dry run, we will not actually have URLs; avoid this output in that case
+					var hasURLs bool
 					for _, server := range servers {
 						if server.PGAnalyzeURL != "" {
-							fmt.Fprintf(os.Stderr, " - [%s]: %s\n", server.Config.SectionName, server.PGAnalyzeURL)
+							hasURLs = true
+							break
 						}
 					}
-					fmt.Fprintln(os.Stderr)
+					if hasURLs {
+						fmt.Fprintln(os.Stderr)
+						fmt.Fprintln(os.Stderr, "Test successful. View servers in pganalyze:")
+						for _, server := range servers {
+							if server.PGAnalyzeURL != "" {
+								fmt.Fprintf(os.Stderr, " - [%s]: %s\n", server.Config.SectionName, server.PGAnalyzeURL)
+							}
+						}
+						fmt.Fprintln(os.Stderr)
+					}
 				}
+				testRunSuccess <- success
 			}
-			return
-		}
+			wg.Done()
+		}()
+		return
 	}
 
 	if globalCollectionOpts.DebugLogs {
@@ -173,20 +205,20 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	}
 
 	if globalCollectionOpts.DiscoverLogLocation {
-		selfhosted.DiscoverLogLocation(servers, globalCollectionOpts, logger)
+		selfhosted.DiscoverLogLocation(ctx, servers, globalCollectionOpts, logger)
 		return
 	}
 
-	schedulerGroups["stats"].Schedule(ctx, func() {
+	schedulerGroups["stats"].Schedule(ctx, func(ctx context.Context) {
 		wg.Add(1)
-		runner.CollectAllServers(servers, globalCollectionOpts, logger)
+		runner.CollectAllServers(ctx, servers, globalCollectionOpts, logger)
 		wg.Done()
 	}, logger, "full snapshot of all servers")
 
 	if hasAnyReportsEnabled {
-		schedulerGroups["reports"].Schedule(ctx, func() {
+		schedulerGroups["reports"].Schedule(ctx, func(ctx context.Context) {
 			wg.Add(1)
-			runner.RunRequestedReports(servers, globalCollectionOpts, logger)
+			runner.RunRequestedReports(ctx, servers, globalCollectionOpts, logger)
 			wg.Done()
 		}, logger, "requested reports for all servers")
 	}
@@ -199,16 +231,16 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	}
 
 	if hasAnyActivityEnabled {
-		schedulerGroups["activity"].Schedule(ctx, func() {
+		schedulerGroups["activity"].Schedule(ctx, func(ctx context.Context) {
 			wg.Add(1)
-			runner.CollectActivityFromAllServers(servers, globalCollectionOpts, logger)
+			runner.CollectActivityFromAllServers(ctx, servers, globalCollectionOpts, logger)
 			wg.Done()
 		}, logger, "activity snapshot of all servers")
 	}
 
-	schedulerGroups["query_stats"].ScheduleSecondary(ctx, func() {
+	schedulerGroups["query_stats"].ScheduleSecondary(ctx, func(ctx context.Context) {
 		wg.Add(1)
-		runner.GatherQueryStatsFromAllServers(servers, globalCollectionOpts, logger)
+		runner.GatherQueryStatsFromAllServers(ctx, servers, globalCollectionOpts, logger)
 		wg.Done()
 	}, logger, "high frequency query statistics of all servers", schedulerGroups["stats"])
 
@@ -224,6 +256,7 @@ func main() {
 	var dryRun bool
 	var dryRunLogs bool
 	var analyzeLogfile string
+	var analyzeDebugClassifications string
 	var filterLogFile string
 	var filterLogSecret string
 	var debugLogs bool
@@ -245,17 +278,20 @@ func main() {
 	var logToJSON bool
 	var logNoTimestamps bool
 	var reloadRun bool
+	var noReload bool
+	var benchmark bool
 
 	logFlags := log.LstdFlags
 	logger := &util.Logger{}
 
 	flag.BoolVarP(&showVersion, "version", "", false, "Shows current version of the collector and exits")
-	flag.BoolVarP(&testRun, "test", "t", false, "Tests whether we can successfully collect statistics (including log data if configured), submits it to the server, and exits afterwards")
+	flag.BoolVarP(&testRun, "test", "t", false, "Tests data collection (including logs), submits it to the server, and reloads the collector daemon (disable with --no-reload)")
 	flag.StringVar(&testReport, "test-report", "", "Tests a particular report and returns its output as JSON")
 	flag.BoolVar(&testRunLogs, "test-logs", false, "Tests whether log collection works (does not test privilege dropping for local log collection, use --test for that)")
 	flag.BoolVar(&testExplain, "test-explain", false, "Tests whether EXPLAIN collection works by issuing a dummy query (ensure log collection works first)")
 	flag.StringVar(&testSection, "test-section", "", "Tests a particular section of the config file, i.e. a specific server, and ignores all other config sections")
 	flag.BoolVar(&reloadRun, "reload", false, "Reloads the collector daemon thats running on the host")
+	flag.BoolVar(&noReload, "no-reload", false, "Disables automatic config reloading during a test run")
 	flag.BoolVarP(&logger.Verbose, "verbose", "v", false, "Outputs additional debugging information, use this if you're encoutering errors or other problems")
 	flag.BoolVarP(&logger.Quiet, "quiet", "q", false, "Only outputs error messages to the logs and hides informational and warning messages")
 	flag.BoolVar(&logToSyslog, "syslog", false, "Write all log output to syslog instead of stderr (disabled by default)")
@@ -264,6 +300,7 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false, "Print JSON data that would get sent to web service (without actually sending) and exit afterwards")
 	flag.BoolVar(&dryRunLogs, "dry-run-logs", false, "Print JSON data for log snapshot (without actually sending) and exit afterwards")
 	flag.StringVar(&analyzeLogfile, "analyze-logfile", "", "Analyzes the content of the given log file and returns debug output about it")
+	flag.StringVar(&analyzeDebugClassifications, "analyze-debug-classifications", "", "When used with --analyze-logfile, print detailed information about given classifications (can be comma-separated list of integer classifications, or keyword 'all')")
 	flag.StringVar(&filterLogFile, "filter-logfile", "", "Test command that filters all known secrets in the logfile according to the filter-log-secret option")
 	flag.StringVar(&filterLogSecret, "filter-log-secret", "all", "Sets the type of secrets filtered by the filter-logfile test command (default: all)")
 	flag.BoolVar(&debugLogs, "debug-logs", false, "Outputs all log analysis that would be sent, doesn't send any other data (use for debugging only)")
@@ -271,7 +308,7 @@ func main() {
 	flag.BoolVar(&forceStateUpdate, "force-state-update", false, "Updates the state file even if other options would have prevented it (intended to be used together with --dry-run for debugging)")
 	flag.BoolVar(&noPostgresRelations, "no-postgres-relations", false, "Don't collect any Postgres relation information (not recommended)")
 	flag.BoolVar(&noPostgresSettings, "no-postgres-settings", false, "Don't collect Postgres configuration settings")
-	flag.BoolVar(&noPostgresLocks, "no-postgres-locks", false, "Don't collect Postgres lock information (NOTE: This is always enabled right now, i.e. no lock data is gathered)")
+	flag.BoolVar(&noPostgresLocks, "no-postgres-locks", false, "Don't collect Postgres lock information")
 	flag.BoolVar(&noPostgresFunctions, "no-postgres-functions", false, "Don't collect Postgres function/procedure information")
 	flag.BoolVar(&noPostgresBloat, "no-postgres-bloat", false, "Don't collect Postgres table/index bloat statistics")
 	flag.BoolVar(&noPostgresViews, "no-postgres-views", false, "Don't collect Postgres view/materialized view information (NOTE: This is not implemented right now - views are always collected)")
@@ -283,7 +320,13 @@ func main() {
 	flag.StringVar(&configFilename, "config", defaultConfigFile, "Specify alternative path for config file")
 	flag.StringVar(&stateFilename, "statefile", defaultStateFile, "Specify alternative path for state file")
 	flag.StringVar(&pidFilename, "pidfile", "", "Specifies a path that a pidfile should be written to (default is no pidfile being written)")
+	flag.BoolVar(&benchmark, "benchmark", false, "Runs collector in benchmark mode (skip submitting the statistics to the server)")
 	flag.Parse()
+
+	// Automatically reload the configuration after a successful test run.
+	if testRun && !noReload {
+		reloadRun = true
+	}
 
 	if showVersion {
 		fmt.Printf("%s\n", util.CollectorVersion)
@@ -322,7 +365,7 @@ func main() {
 
 	globalCollectionOpts := state.CollectionOpts{
 		StartedAt:                time.Now(),
-		SubmitCollectedData:      true,
+		SubmitCollectedData:      !benchmark && true,
 		TestRun:                  testRun,
 		TestReport:               testReport,
 		TestRunLogs:              testRunLogs || dryRunLogs,
@@ -341,7 +384,8 @@ func main() {
 		CollectSystemInformation: !noSystemInformation,
 		StateFilename:            stateFilename,
 		WriteStateUpdate:         (!dryRun && !dryRunLogs && !testRun) || forceStateUpdate,
-		ForceEmptyGrant:          dryRun || dryRunLogs,
+		ForceEmptyGrant:          dryRun || dryRunLogs || benchmark,
+		OutputAsJson:             !benchmark,
 	}
 
 	if reloadRun && !testRun {
@@ -363,24 +407,47 @@ func main() {
 	}
 
 	if analyzeLogfile != "" {
-		content, err := ioutil.ReadFile(analyzeLogfile)
+		contentBytes, err := ioutil.ReadFile(analyzeLogfile)
 		if err != nil {
 			fmt.Printf("ERROR: %s\n", err)
 			return
 		}
-		logLines, samples := logs.DebugParseAndAnalyzeBuffer(string(content))
-		logs.PrintDebugInfo(string(content), logLines, samples)
+		content := string(contentBytes)
+		reader := strings.NewReader(content)
+		logReader := logs.NewMaybeHerokuLogReader(reader)
+		logLines, samples := logs.ParseAndAnalyzeBuffer(logReader, time.Time{}, state.MakeServer(config.ServerConfig{}))
+		logs.PrintDebugInfo(content, logLines, samples)
+		if analyzeDebugClassifications != "" {
+			classifications := strings.Split(analyzeDebugClassifications, ",")
+			classMap := make(map[pganalyze_collector.LogLineInformation_LogClassification]bool)
+			for _, classification := range classifications {
+				if classification == "all" {
+					// we represent "all" as an empty map
+					continue
+				}
+				classVal, err := strconv.ParseInt(classification, 10, 32)
+				if err != nil {
+					fmt.Printf("ERROR: invalid classification: %s\n", err)
+				}
+				classInt := int32(classVal)
+				classMap[pganalyze_collector.LogLineInformation_LogClassification(classInt)] = true
+			}
+			logs.PrintDebugLogLines(content, logLines, classMap)
+		}
 		return
 	}
 
 	if filterLogFile != "" {
-		content, err := ioutil.ReadFile(filterLogFile)
+		contentBytes, err := ioutil.ReadFile(filterLogFile)
 		if err != nil {
 			fmt.Printf("ERROR: %s\n", err)
 			return
 		}
-		logLines, _ := logs.DebugParseAndAnalyzeBuffer(string(content))
-		output := logs.ReplaceSecrets(content, logLines, state.ParseFilterLogSecret(filterLogSecret))
+		content := string(contentBytes)
+		reader := strings.NewReader(content)
+		logReader := logs.NewMaybeHerokuLogReader(reader)
+		logLines, _ := logs.ParseAndAnalyzeBuffer(logReader, time.Time{}, &state.Server{})
+		output := logs.ReplaceSecrets(contentBytes, logLines, state.ParseFilterLogSecret(filterLogSecret))
 		fmt.Printf("%s", output)
 		return
 	}
@@ -409,12 +476,13 @@ func main() {
 	}
 
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 ReadConfigAndRun:
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
-	keepRunning, reloadOkay, writeStateFile := run(ctx, &wg, globalCollectionOpts, logger, configFilename)
+	exitCode := 0
+	keepRunning, testRunSuccess, writeStateFile, shutdown := run(ctx, &wg, globalCollectionOpts, logger, configFilename)
 
 	if keepRunning {
 		// Block here until we get any of the registered signals
@@ -434,61 +502,93 @@ ReadConfigAndRun:
 				}
 			}
 			logger.PrintInfo("Reloading configuration...")
+			shutdown()
 			cancel()
 			wg.Wait()
 			writeStateFile()
 			goto ReadConfigAndRun
 		}
 
-		signal.Stop(sigs)
-
 		logger.PrintInfo("Exiting...")
+	} else {
+		// The run function started some work (e.g. a test command), wait for that to finish before exiting
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			wg.Wait()
+		}()
+	DoneOrSignal:
+		for {
+			select {
+			case success := <-testRunSuccess:
+				if reloadRun {
+					if success {
+						Reload(logger)
+					} else {
+						logger.PrintError("Error: Reload requested, but ignoring since configuration errors are present")
+						exitCode = 1
+					}
+				} else if !success {
+					exitCode = 1
+				}
+				break DoneOrSignal
+			case s := <-sigs:
+				if s == syscall.SIGINT || s == syscall.SIGTERM {
+					logger.PrintError("Interrupt")
+					break DoneOrSignal
+				}
+			}
+		}
 	}
 
+	shutdown()
 	cancel()
 	wg.Wait()
 
-	if reloadRun {
-		if reloadOkay {
-			Reload(logger)
-		} else {
-			logger.PrintError("Error: Reload requested, but ignoring since configuration errors are present")
-			os.Exit(1)
-		}
-	}
+	signal.Stop(sigs)
 
 	if testRunAndTrace {
 		trace.Stop()
 	}
+
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
 }
 
-func checkAllInitialCollectionStatus(servers []*state.Server, opts state.CollectionOpts, logger *util.Logger) {
+func checkAllInitialCollectionStatus(ctx context.Context, servers []*state.Server, opts state.CollectionOpts, logger *util.Logger) {
 	for _, server := range servers {
 		var prefixedLogger = logger.WithPrefix(server.Config.SectionName)
-		err := checkOneInitialCollectionStatus(server, opts, prefixedLogger)
+		err := checkOneInitialCollectionStatus(ctx, server, opts, prefixedLogger)
 		if err != nil {
 			prefixedLogger.PrintVerbose("could not check initial collection status: %s", err)
 		}
 	}
 }
 
-func checkOneInitialCollectionStatus(server *state.Server, opts state.CollectionOpts, logger *util.Logger) error {
-	conn, err := postgres.EstablishConnection(server, logger, opts, "")
+func checkOneInitialCollectionStatus(ctx context.Context, server *state.Server, opts state.CollectionOpts, logger *util.Logger) error {
+	conn, err := postgres.EstablishConnection(ctx, server, logger, opts, "")
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to database")
 	}
 	defer conn.Close()
 
-	settings, err := postgres.GetSettings(conn)
+	settings, err := postgres.GetSettings(ctx, conn)
 	if err != nil {
 		return err
 	}
+
+	if server.Config.DbDataDirectory == "" {
+		// We don't need a mutex here, because we only do this once at startup
+		server.Config.DbDataDirectory = postgres.GetDataDirectory(server, settings)
+	}
+
 	logsDisabled, logsIgnoreStatement, logsIgnoreDuration, logsDisabledReason := logs.ValidateLogCollectionConfig(server, settings)
 
 	var isIgnoredReplica bool
 	var collectionDisabledReason string
 	if server.Config.SkipIfReplica {
-		isIgnoredReplica, err = postgres.GetIsReplica(logger, conn)
+		isIgnoredReplica, err = postgres.GetIsReplica(ctx, logger, conn)
 		if err != nil {
 			return err
 		}
@@ -500,6 +600,15 @@ func checkOneInitialCollectionStatus(server *state.Server, opts state.Collection
 		logger.PrintInfo("All monitoring suspended for this server: %s", collectionDisabledReason)
 	} else if logsDisabled {
 		logger.PrintInfo("Log collection suspended for this server: %s", logsDisabledReason)
+	} else if logsIgnoreDuration {
+		logger.PrintInfo("Log duration lines will be ignored for this server: %s", logsDisabledReason)
+	} else if logsIgnoreStatement {
+		logger.PrintInfo("Log statement lines will be ignored for this server: %s", logsDisabledReason)
+	}
+
+	server.SetLogTimezone(settings)
+	if server.LogTimezone == nil {
+		logger.PrintWarning("Could not determine log timezone for this server: %s")
 	}
 
 	server.CollectionStatusMutex.Lock()
@@ -525,9 +634,9 @@ func Reload(logger *util.Logger) {
 	os.Exit(0)
 }
 
-func doLogTest(servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) bool {
+func doLogTest(ctx context.Context, servers []*state.Server, globalCollectionOpts state.CollectionOpts, logger *util.Logger) bool {
 	// Initial test
-	hasFailedServers, hasSuccessfulLocalServers := runner.TestLogsForAllServers(servers, globalCollectionOpts, logger)
+	hasFailedServers, hasSuccessfulLocalServers := runner.TestLogsForAllServers(ctx, servers, globalCollectionOpts, logger)
 
 	// Re-test using lower privileges
 	if hasFailedServers {
