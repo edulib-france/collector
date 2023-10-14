@@ -34,6 +34,7 @@ const LogPrefixCustom16 string = "%t [%p] %q%u@%d %h "
 const LogPrefixSimple string = "%m [%p] "
 const LogPrefixHeroku1 string = " sql_error_code = %e "
 const LogPrefixHeroku2 string = ` sql_error_code = %e time_ms = "%m" pid="%p" proc_start_time="%s" session_id="%c" vtid="%v" tid="%x" log_line="%l" %qdatabase="%d" connection_source="%r" user="%u" application_name="%a" `
+const LogPrefixScalingo string = "time=%t, pid=%p %q db=%d, usr=%u, client=%h , app=%a, line=%l "
 
 // Used only to recognize the Heroku hobby tier log_line_prefix to give a warning (logs are not supported
 // on hobby tier) and avoid errors during prefix check; logs with this prefix are never actually received
@@ -95,6 +96,7 @@ var LogPrefixSimpleRegexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + Pi
 var LogPrefixNoTimestampUserDatabaseAppRegexp = regexp.MustCompile(`(?s)^\[user=` + UserRegexp + `,db=` + DbRegexp + `,app=` + AppInsideBracketsRegexp + `\] ` + LevelAndContentRegexp)
 var LogPrefixHeroku1Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + " " + LevelAndContentRegexp)
 var LogPrefixHeroku2Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + ` time_ms = "` + TimeRegexp + `" pid="` + PidRegexp + `" proc_start_time="` + TimeRegexp + `" session_id="` + SessionIdRegexp + `" vtid="` + VirtualTxRegexp + `" tid="` + TransactionIdRegexp + `" log_line="` + LogLineCounterRegexp + `" (?:database="` + DbRegexp + `" connection_source="` + HostAndPortRegexp + `" user="` + UserRegexp + `" application_name="` + AppBeforeQuoteRegexp + `" )?` + LevelAndContentRegexp)
+var LogPrefixScalingoRegexp = regexp.MustCompile(`time=` + TimeRegexp + `, pid=` + PidRegexp + ` db=` + DbRegexp + `, usr=` + UserRegexp + `, client=` + HostRegexp + ` , app=` + AppBeforeCommaRegexp + `, line=` + LogLineCounterRegexp + ` ` + LevelAndContentRegexp)
 
 var SyslogSequenceAndSplitRegexp = `(\[[\d-]+\])?`
 
