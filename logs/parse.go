@@ -49,7 +49,7 @@ var SupportedPrefixes = []string{
 	LogPrefixCustom7, LogPrefixCustom8, LogPrefixCustom9, LogPrefixCustom10,
 	LogPrefixCustom11, LogPrefixCustom12, LogPrefixCustom13, LogPrefixCustom14,
 	LogPrefixCustom15, LogPrefixCustom16,
-	LogPrefixSimple, LogPrefixHeroku1, LogPrefixHeroku2, LogPrefixEmpty,
+	LogPrefixSimple, LogPrefixHeroku1, LogPrefixHeroku2, LogPrefixScalingo, LogPrefixEmpty,
 }
 
 // Every one of these regexps should produce exactly one matching group
@@ -171,6 +171,8 @@ func ParseLogLineWithPrefix(prefix string, line string, tz *time.Location) (logL
 			prefix = LogPrefixSimple
 		} else if LogPrefixHeroku2Regexp.MatchString(line) {
 			prefix = LogPrefixHeroku2
+		} else if LogPrefixScalingoRegexp.MatchString(line) {
+			prefix = LogPrefixScalingo
 		} else if LogPrefixHeroku1Regexp.MatchString(line) {
 			// LogPrefixHeroku1 is a subset of 2, so it must be matched second
 			prefix = LogPrefixHeroku1
@@ -464,6 +466,19 @@ func ParseLogLineWithPrefix(prefix string, line string, tz *time.Location) (logL
 			appPart = parts[12]
 			levelPart = parts[13]
 			contentPart = parts[14]
+		case LogPrefixScalingo: // time=%t, pid=%p %q db=%d, usr=%u, client=%h , app=%a, line=%l
+			parts := LogPrefixCustom4Regexp.FindStringSubmatch(line)
+			if len(parts) == 0 {
+				return
+			}
+			timePart = parts[1]
+			pidPart = parts[2]
+			dbPart = parts[3]
+			userPart = parts[4]
+			// skip %h (host)
+			appPart = parts[6]
+			levelPart = parts[7]
+			contentPart = parts[8]
 		default:
 			// Some callers use the content of unparsed lines to stitch multi-line logs together
 			logLine.Content = line + lineExtra
