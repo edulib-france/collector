@@ -87,6 +87,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	hasAnyGoogleCloudSQL := false
 	hasAnyAzureDatabase := false
 	hasAnyHeroku := false
+	hasAnyScalingo := false
 
 	serverConfigs := conf.Servers
 	for _, config := range serverConfigs {
@@ -112,6 +113,9 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		}
 		if config.SystemType == "heroku" {
 			hasAnyHeroku = true
+		}
+		if config.SystemType == "scalingo" {
+			hasAnyScalingo = true
 		}
 	}
 
@@ -199,7 +203,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	}
 
 	if globalCollectionOpts.DebugLogs {
-		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase)
+		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase, hasAnyScalingo)
 
 		// Keep running but only running log processing
 		keepRunning = true
@@ -227,7 +231,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 
 	if hasAnyLogsEnabled {
 		logger.PrintInfo("Starting Log collection server")
-		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase)
+		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase, hasAnyScalingo)
 	} else if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
 		// Even if logs are deactivated, Heroku still requires us to have a functioning web server
 		logger.PrintInfo("Starting dummy server")
