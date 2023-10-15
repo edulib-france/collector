@@ -18,6 +18,7 @@ func SetupHttpHandlerLogs(ctx context.Context, wg *sync.WaitGroup, globalCollect
 	go func() {
 		http.HandleFunc("/", util.HttpRedirectToApp)
 		http.HandleFunc("/logs/", func(w http.ResponseWriter, r *http.Request) {
+			logger.PrintError("Received log: %s", r.Body)
 			for _, item := range ReadHerokuPostgresSyslogMessages(r.Body) {
 				item.Path = r.URL.Path
 				select {
