@@ -3,6 +3,7 @@ package heroku
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
