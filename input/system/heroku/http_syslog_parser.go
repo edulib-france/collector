@@ -2,6 +2,7 @@ package heroku
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func ReadHerokuPostgresSyslogMessages(r io.Reader) []HttpSyslogMessage {
 		if err != nil {
 			break
 		}
+		fmt.Printf("Received %s\n", lenStr)
 		lenStr = lenStr[:len(lenStr)-1]
 
 		remainingBytes, err := strconv.ParseInt(lenStr, 10, 64)
