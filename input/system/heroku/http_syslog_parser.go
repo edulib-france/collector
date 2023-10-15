@@ -23,6 +23,7 @@ type HttpSyslogMessage struct {
 // Discards all syslog messages not related to Heroku Postgres
 func ReadHerokuPostgresSyslogMessages(r io.Reader) []HttpSyslogMessage {
 	var out []HttpSyslogMessage
+	logger.PrintError("Received log: %s", r)
 
 	reader := bufio.NewReader(r)
 	for {
