@@ -2,17 +2,12 @@ package scalingo
 
 import (
 	"context"
-	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/kr/logfmt"
-	"github.com/pganalyze/collector/grant"
 	"github.com/pganalyze/collector/logs"
-	"github.com/pganalyze/collector/output"
 	"github.com/pganalyze/collector/state"
 	"github.com/pganalyze/collector/util"
 )
@@ -49,8 +44,9 @@ func logStreamItemToLogLine(ctx context.Context, item HttpSyslogMessage, servers
 	if strings.HasPrefix(item.Path, "/logs/") {
 		sourceName = strings.Replace(item.Path, "/logs/", "", 1)
 	}
+	content := string(item.Content)
 
-	logLine, _ := logs.ParseLogLineWithPrefix("", item.Content+"\n", nil)
+	logLine, _ := logs.ParseLogLineWithPrefix("", content+"\n", nil)
 	sourceToServer = catchIdentifyServerLine(sourceName, logLine.Content, sourceToServer, servers)
 
 	return sourceToServer, &logLine, sourceName

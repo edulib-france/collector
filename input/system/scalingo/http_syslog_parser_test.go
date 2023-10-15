@@ -18,8 +18,6 @@ var logplexTests = []logplexTestpair{
 		`688 <134>1 2023-06-05T19:27:18+00:00 host app heroku-postgres - source=HEROKU_POSTGRESQL_YELLOW addon=postgresql-reticulated-12345 sample#current_transaction=19028263 sample#db_size=10311979679bytes sample#tables=1443 sample#active-connections=11 sample#waiting-connections=0 sample#index-cache-hit-rate=0.99814 sample#table-cache-hit-rate=0.96729 sample#load-avg-1m=0 sample#load-avg-5m=0 sample#load-avg-15m=0 sample#read-iops=0 sample#write-iops=0.21311 sample#tmp-disk-used=543600640 sample#tmp-disk-available=72435191808 sample#memory-total=8036340kB sample#memory-free=80640kB sample#memory-cached=7319340kB sample#memory-postgres=23380kB sample#wal-percentage-used=0.06427136779541504` + "\n",
 		[]heroku.HttpSyslogMessage{
 			{
-				HeaderTimestamp: "2023-06-05T19:27:18+00:00",
-				HeaderProcID:    "heroku-postgres",
 				Content:         []byte(`source=HEROKU_POSTGRESQL_YELLOW addon=postgresql-reticulated-12345 sample#current_transaction=19028263 sample#db_size=10311979679bytes sample#tables=1443 sample#active-connections=11 sample#waiting-connections=0 sample#index-cache-hit-rate=0.99814 sample#table-cache-hit-rate=0.96729 sample#load-avg-1m=0 sample#load-avg-5m=0 sample#load-avg-15m=0 sample#read-iops=0 sample#write-iops=0.21311 sample#tmp-disk-used=543600640 sample#tmp-disk-available=72435191808 sample#memory-total=8036340kB sample#memory-free=80640kB sample#memory-cached=7319340kB sample#memory-postgres=23380kB sample#wal-percentage-used=0.06427136779541504` + "\n"),
 				Path:            "",
 			},
@@ -30,14 +28,10 @@ var logplexTests = []logplexTestpair{
 			`85 <134>1 2023-06-05T19:33:14+00:00 host app postgres.1105947 - [YELLOW] [12-2] 	SELECT` + "\n",
 		[]heroku.HttpSyslogMessage{
 			{
-				HeaderTimestamp: "2023-06-05T19:33:14+00:00",
-				HeaderProcID:    "postgres.1105947",
 				Content:         []byte(`[YELLOW] [12-1]  sql_error_code = 00000 time_ms = "2023-06-05 19:33:14.793 UTC" pid="1991397" proc_start_time="2023-06-05 19:33:12 UTC" session_id="647e3878.1e62e5" vtid="2/0" tid="0" log_line="3" database="databasedataba" connection_source="11.222.333.444(12345)" user="useruseruserus" application_name="pganalyze_test_run" LOG:  duration: 2405.887 ms  statement: WITH naptime(value) AS (` + "\n"),
 				Path:            "",
 			},
 			{
-				HeaderTimestamp: "2023-06-05T19:33:14+00:00",
-				HeaderProcID:    "postgres.1105947",
 				Content:         []byte("[YELLOW] [12-2] 	SELECT" + "\n"),
 				Path:            "",
 			},

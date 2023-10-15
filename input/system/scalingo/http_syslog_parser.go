@@ -3,13 +3,9 @@ package scalingo
 import (
 	"bufio"
 	"io"
-	"strconv"
-	"strings"
 )
 
 type HttpSyslogMessage struct {
-	HeaderTimestamp string
-	HeaderProcID    string
 	Content         []byte
 	Path            string
 }
@@ -32,8 +28,6 @@ func ReadScalingoPostgresMessages(r io.Reader) []HttpSyslogMessage {
 		}
 
 		item := HttpSyslogMessage{
-			HeaderTimestamp: "",
-			HeaderProcID:    "",
 			Content:         content,
 			Path:            "", // To be added later by caller
 		}
