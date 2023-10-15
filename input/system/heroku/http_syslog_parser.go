@@ -31,7 +31,6 @@ func ReadHerokuPostgresSyslogMessages(r io.Reader) []HttpSyslogMessage {
 		if err != nil {
 			break
 		}
-		fmt.Printf("Received %s\n", lenStr)
 		lenStr = lenStr[:len(lenStr)-1]
 
 		remainingBytes, err := strconv.ParseInt(lenStr, 10, 64)
@@ -104,6 +103,28 @@ func ReadHerokuPostgresSyslogMessages(r io.Reader) []HttpSyslogMessage {
 			}
 			out = append(out, item)
 		}
+	}
+
+	return out
+}
+
+func ReadScalingoPostgresMessages(r io.Reader) []HttpSyslogMessage {
+	var out []HttpSyslogMessage
+
+	reader := bufio.NewReader(r)
+	for {
+		content, err = io.ReadAll(reader, bytes)
+		if err != nil {
+			break
+		}
+
+		item := HttpSyslogMessage{
+			HeaderTimestamp: "",
+			HeaderProcID:    "",
+			Content:         content,
+			Path:            "", // To be added later by caller
+		}
+		out = append(out, item)
 	}
 
 	return out

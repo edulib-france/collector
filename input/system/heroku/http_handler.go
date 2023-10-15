@@ -18,7 +18,7 @@ func SetupHttpHandlerLogs(ctx context.Context, wg *sync.WaitGroup, globalCollect
 	go func() {
 		http.HandleFunc("/", util.HttpRedirectToApp)
 		http.HandleFunc("/logs/", func(w http.ResponseWriter, r *http.Request) {
-			for _, item := range ReadHerokuPostgresSyslogMessages(r.Body) {
+			for _, item := range ReadScalingoPostgresMessages(r.Body) {
 				item.Path = r.URL.Path
 				select {
 				case herokuLogStream <- item:
