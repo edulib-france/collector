@@ -112,7 +112,7 @@ func ReadScalingoPostgresMessages(r io.Reader) []HttpSyslogMessage {
 
 	reader := bufio.NewReader(r)
 	for {
-		content, err := io.ReadAll(reader, bytes)
+		content, err := io.ReadAll(reader)
 		if err != nil {
 			break
 		}
