@@ -55,13 +55,11 @@ func SetupLogCollection(ctx context.Context, wg *sync.WaitGroup, servers []*stat
 		selfhosted.SetupLogTails(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
 	}
 	if hasAnyHeroku {
-		heroku.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
-		for _, server := range servers {
-			EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
+		if hasAnyScalingo {
+			scalingo.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
+		} else {
+			heroku.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
 		}
-	}
-	if hasAnyScalingo {
-		scalingo.SetupHttpHandlerLogs(ctx, wg, globalCollectionOpts, logger, servers, parsedLogStream)
 		for _, server := range servers {
 			EmitTestLogMsg(ctx, server, globalCollectionOpts, logger)
 		}

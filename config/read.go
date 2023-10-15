@@ -673,11 +673,7 @@ func Read(logger *util.Logger, filename string) (Config, error) {
 
 				config.SectionName = parsedKey
 				config.SystemID = strings.Replace(parsedKey, "_URL", "", 1)
-				if os.Getenv("STACK") != "" && strings.Contains(os.Getenv("STACK"), "scalingo") {
-					config.SystemType = "scalingo"
-				} else {
-					config.SystemType = "heroku"
-				}
+				config.SystemType = "heroku"
 				config.DbURL = parsedValue
 				config.Identifier = ServerIdentifier{
 					APIKey:      config.APIKey,

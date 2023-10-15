@@ -114,7 +114,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 		if config.SystemType == "heroku" {
 			hasAnyHeroku = true
 		}
-		if config.SystemType == "scalingo" {
+		if os.Getenv("STACK") != "" && strings.Contains(os.Getenv("STACK"), "scalingo") {
 			hasAnyScalingo = true
 		}
 	}
