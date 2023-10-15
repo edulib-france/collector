@@ -98,6 +98,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 			hasAnyReportsEnabled = true
 		}
 		if !config.DisableLogs {
+			logger.PrintInfo("Log collection enabled for this server")
 			hasAnyLogsEnabled = true
 		}
 		if !config.DisableActivity {
@@ -161,6 +162,7 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 					}
 				}
 				if hasAnyLogsEnabled && ctx.Err() == nil {
+					fmt.Fprintln(os.Stderr, "Testing logs:")
 					// We intentionally don't fail for the regular test command if the log test fails, since you may not
 					// have Log Insights enabled on your plan (which would fail the log test when getting the log grant).
 					// In these situations we still want --test to be successful (i.e. issue a reload), but --test-logs
@@ -224,9 +226,11 @@ func run(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.Col
 	}
 
 	if hasAnyLogsEnabled {
+		logger.PrintInfo("Starting Log collection server")
 		runner.SetupLogCollection(ctx, wg, servers, globalCollectionOpts, logger, hasAnyHeroku, hasAnyGoogleCloudSQL, hasAnyAzureDatabase)
 	} else if os.Getenv("DYNO") != "" && os.Getenv("PORT") != "" {
 		// Even if logs are deactivated, Heroku still requires us to have a functioning web server
+		logger.PrintInfo("Starting dummy server")
 		util.SetupHttpHandlerDummy()
 	}
 
@@ -640,6 +644,7 @@ func doLogTest(ctx context.Context, servers []*state.Server, globalCollectionOpt
 
 	// Re-test using lower privileges
 	if hasFailedServers {
+		fmt.Fprintln(os.Stderr, "Test successful. View servers in pganalyze:")
 		return false
 	}
 	if !hasSuccessfulLocalServers {
