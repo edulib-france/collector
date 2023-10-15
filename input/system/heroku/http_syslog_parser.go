@@ -2,7 +2,6 @@ package heroku
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -113,7 +112,7 @@ func ReadScalingoPostgresMessages(r io.Reader) []HttpSyslogMessage {
 
 	reader := bufio.NewReader(r)
 	for {
-		content, err = io.ReadAll(reader, bytes)
+		content, err := io.ReadAll(reader, bytes)
 		if err != nil {
 			break
 		}
