@@ -96,7 +96,7 @@ var LogPrefixSimpleRegexp = regexp.MustCompile(`(?s)^` + TimeRegexp + ` \[` + Pi
 var LogPrefixNoTimestampUserDatabaseAppRegexp = regexp.MustCompile(`(?s)^\[user=` + UserRegexp + `,db=` + DbRegexp + `,app=` + AppInsideBracketsRegexp + `\] ` + LevelAndContentRegexp)
 var LogPrefixHeroku1Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + " " + LevelAndContentRegexp)
 var LogPrefixHeroku2Regexp = regexp.MustCompile(`^ sql_error_code = ` + SqlstateRegexp + ` time_ms = "` + TimeRegexp + `" pid="` + PidRegexp + `" proc_start_time="` + TimeRegexp + `" session_id="` + SessionIdRegexp + `" vtid="` + VirtualTxRegexp + `" tid="` + TransactionIdRegexp + `" log_line="` + LogLineCounterRegexp + `" (?:database="` + DbRegexp + `" connection_source="` + HostAndPortRegexp + `" user="` + UserRegexp + `" application_name="` + AppBeforeQuoteRegexp + `" )?` + LevelAndContentRegexp)
-var LogPrefixScalingoRegexp = regexp.MustCompile(`time=` + TimeRegexp + `, pid=` + PidRegexp + ` db=` + DbRegexp + `, usr=` + UserRegexp + `, client=` + HostRegexp + ` , app=` + AppBeforeCommaRegexp + `, line=` + LogLineCounterRegexp + ` ` + LevelAndContentRegexp)
+var LogPrefixScalingoRegexp = regexp.MustCompile(`time=` + TimeRegexp + `, pid=` + PidRegexp + `  db=` + DbRegexp + `, usr=` + UserRegexp + `, client=` + HostRegexp + ` , app=` + AppBeforeCommaRegexp + `, line=` + LogLineCounterRegexp + ` ` + LevelAndContentRegexp)
 
 var SyslogSequenceAndSplitRegexp = `(\[[\d-]+\])?`
 
